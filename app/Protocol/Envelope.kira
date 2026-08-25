@@ -1,0 +1,77 @@
+// What every frame carries around its payload.
+//
+// The envelope is itself a `@Derive(IpcMessage)`, which is deliberate: the one
+// structure that must survive two components being installed from different
+// releases is the one that says which component and which call a frame is for.
+// Giving it a hand-rolled fixed layout would make it the single part of the
+// system that could not grow a field.
+
+// What a frame is doing, rather than what it says.
+//
+// Four cases and no more. A stream is a run of events sharing a call number, and
+// a cancellation is a request like any other -- both are things a service
+// declares, not shapes the transport needs to know about.
+@Derive(IpcMessage)
+enum IpcKind {
+    // Asks a service for something and expects exactly one answer.
+    Request
+    // That answer, carrying the request's call number.
+    Response
+    // Something a service is announcing. No call number, and nobody is waiting.
+    Event
+    // The answer a request gets when the service will not or cannot serve it.
+    // A fault is a normal outcome, not a transport failure: the peer is fine and
+    // has said no.
+    Fault
+}
+
+@Derive(IpcMessage)
+struct IpcEnvelope {
+    // Which component the frame is for -- "harmony.browser", "harmony.ai".
+    // A name rather than a number because the components are installed
+    // separately: a number would need a registry both sides agreed on, and the
+    // whole point is that neither was built against the other.
+    var service: String
+    // What is being asked, or what is being announced. A name for the same
+    // reason, and legible in a log without a decoder ring.
+    var method: String
+    var kind: IpcKind
+    // Ties a response to its request. Zero on an event, because nothing is
+    // waiting for one.
+    var call: Int
+    // The message itself, encoded by its own generated encoder. The transport
+    // never looks inside: only the two ends know what a method's payload is, and
+    // that is what lets a method's shape change without the envelope changing.
+    var payload: [U8]
+}
+
+// The bytes of one frame.
+function ipcEnvelopeBytes(envelope: borrow IpcEnvelope) -> [U8] {
+    var out = IpcWriter {}
+    encode_IpcEnvelope(envelope, out)
+    return out.bytes
+}
+
+// A frame's envelope, and whether the frame was sound.
+//
+// The soundness is answered here rather than left to the caller to ask, because
+// this is the one place a frame from another process is first believed.
+struct IpcArrival {
+    var envelope: IpcEnvelope
+    var sound: Bool
+}
+
+function ipcArrival(bytes: [U8]) -> IpcArrival {
+    var reader = ipcReader(move bytes)
+    let envelope = decode_IpcEnvelope(reader)
+    return IpcArrival {
+        envelope: move envelope
+        sound: reader.ok()
+    }
+}
+
+// A reader over a delivered payload, for the generated decoder of whatever the
+// method carries.
+function ipcPayloadReader(envelope: borrow IpcEnvelope) -> IpcReader {
+    return ipcReader(envelope.payload)
+}

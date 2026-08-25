@@ -1,0 +1,225 @@
+// Reading KIP/1.
+//
+// The reader's one rule is that it NEVER TRAPS. Foundation's `deserialize_*`
+// stops the program on malformed input, and for its own data that is right: a
+// value the program itself wrote and cannot read back is a bug, and continuing
+// past it hides the bug. This decodes bytes from ANOTHER PROCESS -- one that may
+// be a different version, may be mid-crash, may be something else entirely
+// listening on the name. A shell that died because a component sent it a short
+// frame would be a shell any component could take down.
+//
+// So every failure is recorded and none of them stops anything: a truncated
+// value, a length running past the frame, a region that overruns its parent all
+// set `failed`, and every read after that answers a default. The generated
+// decoder runs to completion and produces a whole value; `ok()` is what says
+// whether that value means anything. One test, once, at the frame -- not a check
+// per field.
+
+struct IpcReader {
+    var bytes: [U8] = []
+    var cursor: Int = 0
+    // One past the last byte this reader may read. A nested region lowers it for
+    // the length of the region and puts it back, which is what stops a nested
+    // message from reading its parent's bytes when its own length is wrong.
+    var limit: Int = 0
+    var failed: Bool = false
+
+    // --- State --------------------------------------------------------------
+
+    // Whether everything read so far was structurally sound. False once anything
+    // has gone wrong, and never true again: a decode that went wrong partway
+    // produced a value from bytes it was misreading, and the fields it got right
+    // before that are not separable from the ones it did not.
+    function ok() -> Bool {
+        return failed == false
+    }
+
+    function atEnd() -> Bool {
+        return cursor >= limit
+    }
+
+    function fail() {
+        self.failed = true
+        // Reading stops where it went wrong rather than running on through
+        // bytes whose meaning is already lost.
+        self.cursor = self.limit
+        return
+    }
+
+    // --- Primitives ---------------------------------------------------------
+
+    function takeByte() -> Int {
+        if cursor >= limit {
+            fail()
+            return 0
+        }
+        let value = Int(bytes[cursor])
+        self.cursor = self.cursor + 1
+        return value
+    }
+
+    // LEB128, refusing a group count that could not have come from a 64-bit
+    // value: ten groups is the most an unsigned 64-bit varint takes, and a
+    // stream of set high bits is otherwise a loop bounded only by the frame.
+    function takeVarUInt() -> U64 {
+        var result = U64(0)
+        var shift = 0
+        var groups = 0
+        while groups < 10 {
+            let byte = takeByte()
+            if failed {
+                return U64(0)
+            }
+            result = result | (U64(byte & 127) << shift)
+            if byte < 128 {
+                return result
+            }
+            shift = shift + 7
+            groups = groups + 1
+        }
+        fail()
+        return U64(0)
+    }
+
+    function takeVarInt() -> Int {
+        let raw = takeVarUInt()
+        if (raw & U64(1)) == U64(0) {
+            return Int(raw >> 1)
+        }
+        return 0 - Int(raw >> 1) - 1
+    }
+
+    function takeFixed() -> U64 {
+        var result = U64(0)
+        var step = 0
+        while step < 8 {
+            let byte = takeByte()
+            if failed {
+                return U64(0)
+            }
+            result = result | (U64(byte) << (step * 8))
+            step = step + 1
+        }
+        return result
+    }
+
+    function takeBool() -> Bool {
+        return takeVarUInt() != U64(0)
+    }
+
+    function takeFloat() -> Float {
+        return kira_ipc_f64_from_bits(takeFixed())
+    }
+
+    // A length-delimited value's byte count, checked against what is actually
+    // left. A length naming more bytes than the reader holds is the commonest
+    // shape of a corrupt or truncated frame, and catching it here is what keeps
+    // every reader below this one inside its parent.
+    function takeLength() -> Int {
+        let declared = takeVarUInt()
+        if failed {
+            return 0
+        }
+        // Compared as a count of bytes remaining rather than converted first: a
+        // length near the top of the U64 range is not an Int this side can hold.
+        if declared > U64(limit - cursor) {
+            fail()
+            return 0
+        }
+        return Int(declared)
+    }
+
+    function takeBytes() -> [U8] {
+        let count = takeLength()
+        var out: [U8] = []
+        var index = 0
+        while index < count {
+            out.append(bytes[cursor + index])
+            index = index + 1
+        }
+        self.cursor = self.cursor + count
+        return out
+    }
+
+    function takeString() -> String {
+        let raw = takeBytes()
+        if raw.count == 0 {
+            return ""
+        }
+        return kira_ipc_text_from_bytes(raw, I32(raw.count))
+    }
+
+    // --- Regions ------------------------------------------------------------
+    //
+    // A nested message, an array, an enum payload: all of them are a length and
+    // that many bytes, and all of them are read by the SAME reader with its
+    // limit lowered for the length of the region. One reader means one `failed`,
+    // so a fault six levels down is the fault the frame reports -- there is no
+    // sub-reader whose failure a caller could forget to fold back in.
+
+    // Lower the limit to the end of the region about to be read, and answer the
+    // limit that was in force so `leaveRegion` can restore it.
+    function enterRegion() -> Int {
+        let count = takeLength()
+        let previous = limit
+        self.limit = self.cursor + count
+        return previous
+    }
+
+    // Put the limit back and step over whatever the region's reader did not
+    // consume. A message carrying fields this build does not know reaches here
+    // with bytes to spare, and skipping them is exactly how it stays readable.
+    function leaveRegion(previous: Int) {
+        self.cursor = self.limit
+        self.limit = previous
+        return
+    }
+
+    // --- Fields -------------------------------------------------------------
+
+    // The next field's key, or 0 at the end of the region. Zero is not a legal
+    // key -- tags are one-based -- so it cannot be confused with a field.
+    function nextKey() -> Int {
+        if atEnd() {
+            return 0
+        }
+        let key = Int(takeVarUInt())
+        if failed {
+            return 0
+        }
+        return key
+    }
+
+    // Step over a field this build has no name for.
+    //
+    // This is the whole of the compatibility story. A peer built from a newer
+    // copy of a message writes fields this one never heard of, and they cost one
+    // read each to walk past. Nothing is lost that this build could have used,
+    // and nothing after them is misread.
+    function skip(wire: borrow IpcWire) {
+        match wire {
+            Var -> {
+                let ignored = takeVarUInt()
+            }
+            Fixed -> {
+                let ignored = takeFixed()
+            }
+            Len -> {
+                let count = takeLength()
+                self.cursor = self.cursor + count
+            }
+        }
+        return
+    }
+}
+
+// A reader over a whole frame.
+function ipcReader(bytes: [U8]) -> IpcReader {
+    let count = bytes.count
+    return IpcReader {
+        bytes: move bytes
+        cursor: 0
+        limit: count
+        failed: false
+    }
+}

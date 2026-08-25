@@ -1,0 +1,43 @@
+Package KiraIpc {
+    let version = "0.1.0"
+    let kira = "0.1.0"
+    let kind = PackageKind.Library
+    let allowThinFfiShim = true
+    let moduleRoot = "KiraIpc"
+    let defaults = Defaults { executionMode: Backend.Llvm, buildTarget: BuildTarget.Host }
+    // One archive, because this is one seam.
+    //
+    // Three things a typed IPC format needs and Kira cannot spell: a Float's
+    // bits, a String built from bytes, and a socket. Everything else -- the
+    // tags, the varints, the field skipping, the generated encoders -- is
+    // ordinary Kira, so it runs the same on every backend and can be read.
+    //
+    // The bindings are generated from the header rather than written out. A
+    // hand-written `@FFI.Extern` block is a second declaration of a signature
+    // the header already states, and the two drift.
+    let nativeLibraries = [
+        NativeLibrary {
+            name: "kira_ipc",
+            linkMode: LinkMode.Static,
+            headers: Headers { entrypoint: "NativeLibs/kira_ipc.h", includeDirs: ["NativeLibs"] },
+            sources: [
+                "NativeLibs/kira_ipc_bits.c",
+                "NativeLibs/kira_ipc_channel.c"
+            ],
+            autobind: Autobind { module: "ipc", headers: ["NativeLibs/kira_ipc.h"], mode: AutobindMode.AllPublic },
+            nativeTargets: [
+                // The channel is a named pipe on Windows and a unix socket
+                // everywhere else; both spellings are in the one source, so
+                // every target names the same files and differs only in what it
+                // links.
+                NativeTarget { triple: "x86_64-windows-msvc", systemLibs: ["kernel32"] },
+                NativeTarget { triple: "x86_64-linux-gnu" },
+                NativeTarget { triple: "aarch64-linux-gnu" },
+                NativeTarget { triple: "aarch64-macos-none" },
+                NativeTarget { triple: "x86_64-macos-none" },
+                NativeTarget { triple: "aarch64-ios-none" },
+                NativeTarget { triple: "aarch64-ios-simulator" }
+            ]
+        }
+    ]
+}

@@ -1,0 +1,161 @@
+// The channel, as Kira sees it.
+//
+// Everything below is a thin reading of `NativeLibs/kira_ipc.h`: an id, the
+// frames going out, the frames coming in. What makes it worth a file of its own
+// is the direction the bytes travel in, which is not symmetric and cannot be.
+//
+// OUT is one call: a Kira array fills a pointer word at the seam, so a frame is
+// handed over whole.
+//
+// IN cannot be. A user FFI signature has no way to return a byte array -- only
+// the runtime ABI does, which is how `fsReadRange` manages it -- so a frame
+// arrives EIGHT BYTES AT A TIME, one call per word. That is affordable because
+// of what crosses here: control messages of a few hundred bytes, tens of them a
+// second. Pixels never come this way. A surface is shared, and what crosses is
+// the handle naming it.
+
+// One frame off a channel: its bytes, and the handle that rode with it.
+//
+// Zero is never a handle, so a frame that carried none and a frame whose handle
+// was already claimed answer the same way -- and a caller that does not expect
+// one never has to ask.
+struct IpcFrame {
+    var bytes: [U8] = []
+    var handle: Int = 0
+}
+
+// A published name other processes connect to.
+struct IpcEndpoint {
+    let id: Int
+
+    function isOpen() -> Bool {
+        return id > 0
+    }
+
+    // The next process that connected, or a closed channel when none has.
+    // Never blocks: a shell accepts beside its window, once a frame, and a
+    // blocking accept would be a frame it did not draw.
+    function accept() -> IpcChannel {
+        if id <= 0 {
+            return IpcChannel { id: 0 }
+        }
+        return IpcChannel { id: Int(kira_ipc_accept(I32(id))) }
+    }
+
+    function close() {
+        if id > 0 {
+            kira_ipc_close(I32(id))
+        }
+        return
+    }
+}
+
+// One connection, in both directions.
+struct IpcChannel {
+    let id: Int
+
+    // Whether this channel can still carry anything.
+    //
+    // A channel that was never opened and a channel whose peer has gone answer
+    // the same way, and callers want the same thing of both: stop using it. The
+    // difference between "not installed" and "was installed and has quit" is a
+    // question for whatever manages components, not for a channel.
+    function isOpen() -> Bool {
+        if id <= 0 {
+            return false
+        }
+        return kira_ipc_alive(I32(id)) != I32(0)
+    }
+
+    // Hand a frame to the platform. False when it did not go, which includes a
+    // peer that has gone since the last frame.
+    function send(bytes: borrow [U8]) -> Bool {
+        if id <= 0 {
+            return false
+        }
+        return kira_ipc_send(I32(id), bytes, I32(bytes.count)) != I32(0)
+    }
+
+    function sendEnvelope(envelope: borrow IpcEnvelope) -> Bool {
+        return send(ipcEnvelopeBytes(envelope))
+    }
+
+    // Send a frame and hand an OS handle over with it.
+    //
+    // The handle is transferred by the CHANNEL rather than described by the
+    // message, because a handle naming a GPU surface, a dmabuf or a shared
+    // memory object means nothing outside the process that owns it. What the
+    // peer receives is its own handle to the same object; what a number in a
+    // message would have given it is a live handle to something else.
+    function sendHandleWith(bytes: borrow [U8], handle: Int) -> Bool {
+        if id <= 0 {
+            return false
+        }
+        return kira_ipc_send_handle(I32(id), bytes, I32(bytes.count), handle) != I32(0)
+    }
+
+    function sendEnvelopeWithHandle(envelope: borrow IpcEnvelope, handle: Int) -> Bool {
+        return sendHandleWith(ipcEnvelopeBytes(envelope), handle)
+    }
+
+    // The frame waiting on this channel, or an empty one when none is.
+    //
+    // A frame is returned whole or not at all: the native side publishes nothing
+    // until every byte of it has arrived, so there is no partial read to handle
+    // and no state to carry between calls.
+    //
+    // Its handle is claimed HERE, before the frame is released, because the
+    // release is what closes an unclaimed one -- a handle nobody took is a
+    // descriptor this process would otherwise hold until it exits.
+    function receive() -> IpcFrame {
+        var frame: [U8] = []
+        if id <= 0 {
+            return IpcFrame { bytes: move frame, handle: 0 }
+        }
+        let length = Int(kira_ipc_poll(I32(id)))
+        if length <= 0 {
+            return IpcFrame { bytes: move frame, handle: 0 }
+        }
+        var index = 0
+        while index < length {
+            // One call per eight bytes. The word is little-endian, and the tail
+            // word of a frame whose length is not a multiple of eight carries
+            // zeros above the bytes that are really there -- which the loop
+            // never reads, because it stops at the length.
+            var word = kira_ipc_frame_word(I32(id), I32(index / 8))
+            var step = 0
+            while step < 8 && index + step < length {
+                frame.append(U8(Int(word & U64(255))))
+                word = word >> 8
+                step = step + 1
+            }
+            index = index + 8
+        }
+        let handle = kira_ipc_frame_handle(I32(id))
+        kira_ipc_frame_release(I32(id))
+        return IpcFrame { bytes: move frame, handle: handle }
+    }
+
+    function close() {
+        if id > 0 {
+            kira_ipc_close(I32(id))
+        }
+        return
+    }
+}
+
+// Publish a name and start accepting on it. A closed endpoint means the name
+// could not be taken, which usually means something else already holds it.
+function ipcListen(name: borrow String) -> IpcEndpoint {
+    return IpcEndpoint { id: Int(kira_ipc_listen(name)) }
+}
+
+// Connect to a published name.
+//
+// A closed channel is the ORDINARY answer, not an error: it is what a shell gets
+// when the AI runtime is not installed, and what it gets when the runtime is
+// installed but has not come up yet. Both are handled the same way -- the
+// features that need it stay off -- so neither is worth distinguishing here.
+function ipcConnect(name: borrow String) -> IpcChannel {
+    return IpcChannel { id: Int(kira_ipc_connect(name)) }
+}

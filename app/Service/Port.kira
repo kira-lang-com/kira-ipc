@@ -1,0 +1,165 @@
+// A channel with the call numbering on it.
+//
+// This is the whole of the request/response machinery, and it is small on
+// purpose. There is no dispatch table, no registry, no generated stubs: a port
+// numbers the calls going out and hands back what arrives, and the application
+// matches a response to what it asked by the number it was given.
+//
+// The alternative -- a port that blocked until an answer came -- would be the
+// wrong shape for every process here. A shell pumps its ports beside its window
+// once a frame; a browser pumps its port beside the engine's run loop. Neither
+// has a thread to spare to sit on a socket, and a frame spent waiting is a frame
+// that did not draw.
+
+// What one pump produced. Three outcomes, and exactly three.
+//
+// Written as one enum rather than as an `arrived` flag beside a `sound` flag,
+// because two booleans describe FOUR states and one of them -- did not arrive,
+// but was sound -- means nothing. A reader meeting the pair has to work out
+// which combinations are real; a reader meeting this does not.
+enum IpcDeliveryKind {
+    // Nothing was waiting. The common case by far: a port is pumped every frame
+    // and most frames are quiet.
+    Quiet
+    // A frame arrived and could be believed.
+    Sound
+    // A frame arrived and could not. It may be truncated, it may come from a
+    // build that disagrees, it may be something else entirely on the name --
+    // and none of those may stop this process, so it arrives here rather than
+    // as a trap.
+    Unreadable
+}
+
+// What one pump produced.
+struct IpcDelivery {
+    var kind: IpcDeliveryKind = IpcDeliveryKind.Quiet
+    var envelope: IpcEnvelope = empty_IpcEnvelope()
+    // The OS handle that arrived with this frame, or 0. Owned by whoever reads
+    // it from here: the channel has let go of it.
+    var handle: Int = 0
+
+    // Whether anything arrived at all, readable or not.
+    function arrived() -> Bool {
+        return kind != IpcDeliveryKind.Quiet
+    }
+
+    // Whether what arrived can be acted on.
+    function sound() -> Bool {
+        return kind == IpcDeliveryKind.Sound
+    }
+}
+
+struct IpcPort {
+    var channel: IpcChannel = IpcChannel { id: 0 }
+    // The next call number to hand out. One-based, so zero stays available for
+    // "no call", which is what an event carries.
+    var nextCall: Int = 1
+
+    function isOpen() -> Bool {
+        return channel.isOpen()
+    }
+
+    // Ask a service for something. The number returned is what the answer will
+    // carry; a caller keeps it for as long as it is waiting.
+    //
+    // Zero means the request did not go, so there will be no answer to wait for.
+    // A caller that ignored this would wait forever on a peer that has quit.
+    function request(service: borrow String, method: borrow String, payload: borrow [U8]) -> Int {
+        let call = nextCall
+        self.nextCall = self.nextCall + 1
+        let sent = channel.sendEnvelope(IpcEnvelope {
+            service: service
+            method: method
+            kind: IpcKind.Request
+            call: call
+            payload: payload
+        })
+        if sent == false {
+            return 0
+        }
+        return call
+    }
+
+    function respond(call: Int, service: borrow String, method: borrow String, payload: borrow [U8]) -> Bool {
+        return channel.sendEnvelope(IpcEnvelope {
+            service: service
+            method: method
+            kind: IpcKind.Response
+            call: call
+            payload: payload
+        })
+    }
+
+    // The answer a request gets when the service will not serve it. A fault is a
+    // normal outcome and carries its own payload -- whatever the service says a
+    // refusal looks like -- rather than a string this layer invented.
+    function fault(call: Int, service: borrow String, method: borrow String, payload: borrow [U8]) -> Bool {
+        return channel.sendEnvelope(IpcEnvelope {
+            service: service
+            method: method
+            kind: IpcKind.Fault
+            call: call
+            payload: payload
+        })
+    }
+
+    // Announce something, handing an OS handle over with it.
+    //
+    // An event rather than a request because a surface is ANNOUNCED: the peer is
+    // told what it now has, and there is nothing to answer.
+    function emitHandle(service: borrow String, method: borrow String, payload: borrow [U8], handle: Int) -> Bool {
+        return channel.sendEnvelopeWithHandle(IpcEnvelope {
+            service: service
+            method: method
+            kind: IpcKind.Event
+            call: 0
+            payload: payload
+        }, handle)
+    }
+
+    // Announce something. No call number, because nothing is waiting.
+    function emit(service: borrow String, method: borrow String, payload: borrow [U8]) -> Bool {
+        return channel.sendEnvelope(IpcEnvelope {
+            service: service
+            method: method
+            kind: IpcKind.Event
+            call: 0
+            payload: payload
+        })
+    }
+
+    // One frame, if one is there.
+    //
+    // One rather than all of them: a caller that wants everything waiting loops
+    // on `arrived`, and a caller that wants to bound the work it does this frame
+    // stops when it likes. Draining unconditionally would let a chatty peer
+    // decide how long this process's frame is.
+    function pump() -> IpcDelivery {
+        let frame = channel.receive()
+        if frame.bytes.count == 0 {
+            return IpcDelivery {}
+        }
+        let arrival = ipcArrival(frame.bytes)
+        var kind = IpcDeliveryKind.Unreadable
+        if arrival.sound {
+            kind = IpcDeliveryKind.Sound
+        }
+        return IpcDelivery {
+            kind: move kind
+            envelope: arrival.envelope
+            handle: frame.handle
+        }
+    }
+
+    function close() {
+        channel.close()
+        return
+    }
+}
+
+function ipcPort(channel: IpcChannel) -> IpcPort {
+    return IpcPort {
+        channel: move channel
+        nextCall: 1
+    }
+}

@@ -1,0 +1,143 @@
+import KiraIpc
+
+// What `@Derive(IpcMessage)` is for, in the smallest program that shows it.
+//
+// Three declarations and no encoding code: the derive writes the encoder, the
+// decoder and the empty value for each, and a nested message, an array and an
+// enum payload all recurse through the ones beside them without being told to.
+
+@Derive(IpcMessage)
+struct Rect {
+    var x: Float
+    var y: Float
+    var width: Float
+    var height: Float
+}
+
+@Derive(IpcMessage)
+enum LoadState {
+    Idle
+    Loading(Float)
+    Failed(String)
+}
+
+@Derive(IpcMessage)
+struct TabSummary {
+    var id: Int
+    var title: String
+    var address: String
+    var pinned: Bool
+    var viewport: Rect
+    var state: LoadState
+    var history: [String]
+}
+
+// The same message as a LATER build of it declares: three fields appended, and
+// nothing before them touched. This is what a shell meets when the AI runtime
+// beside it was installed from a newer release than the browser was.
+@Derive(IpcMessage)
+struct TabSummaryNext {
+    var id: Int
+    var title: String
+    var address: String
+    var pinned: Bool
+    var viewport: Rect
+    var state: LoadState
+    var history: [String]
+    var muted: Bool
+    var zoom: Float = 1.0
+    var labels: [String]
+}
+
+@Main
+function entry() {
+    let sent = TabSummary {
+        id: 7
+        title: "A title with \" a quote; a semicolon and } a brace"
+        address: "https://example.com/search?q=a+b"
+        pinned: true
+        viewport: Rect { x: 0.0, y: 38.0, width: 1280.0, height: 762.0 }
+        state: LoadState.Loading(0.4)
+        history: ["https://example.com", "https://example.com/one"]
+    }
+
+    var out = IpcWriter {}
+    encode_TabSummary(sent, out)
+    print("encoded bytes: " + String(out.bytes.count))
+
+    var input = ipcReader(out.bytes)
+    let back = decode_TabSummary(input)
+    print("sound: " + String(input.ok()))
+    print("id: " + String(back.id))
+    print("title: " + back.title)
+    print("address: " + back.address)
+    print("pinned: " + String(back.pinned))
+    print("viewport height: " + String(back.viewport.height))
+    print("history: " + String(back.history.count) + " " + back.history[1])
+    match back.state {
+        Idle -> print("state: idle");
+        Loading(progress) -> print("state: loading " + String(progress));
+        Failed(reason) -> print("state: failed " + reason);
+    }
+
+    // A frame that stops halfway is the shape a crashed peer leaves behind. It
+    // must produce a value and a false `ok()`, never a stopped process.
+    var truncated: [U8] = []
+    var index = 0
+    while index < out.bytes.count / 2 {
+        truncated.append(out.bytes[index])
+        index = index + 1
+    }
+    var short = ipcReader(move truncated)
+    let partial = decode_TabSummary(short)
+    print("truncated sound: " + String(short.ok()))
+    print("truncated id: " + String(partial.id))
+
+    // --- Two builds of one declaration ------------------------------------
+    //
+    // The claim the whole format exists for: a peer built from a different copy
+    // of a message is readable in BOTH directions. Neither side is told which
+    // build the bytes came from, and neither needs to be.
+
+    // Newer peer -> older reader. The three appended fields are skipped whole,
+    // and every field this build does know arrives intact.
+    let ahead = TabSummaryNext {
+        id: 9
+        title: "From a newer build"
+        address: "https://example.com/next"
+        pinned: false
+        viewport: Rect { x: 0.0, y: 38.0, width: 800.0, height: 600.0 }
+        state: LoadState.Failed("offline")
+        history: ["https://example.com"]
+        muted: true
+        zoom: 1.25
+        labels: ["work", "reading"]
+    }
+    var aheadBytes = IpcWriter {}
+    encode_TabSummaryNext(ahead, aheadBytes)
+    var older = ipcReader(aheadBytes.bytes)
+    let readOlder = decode_TabSummary(older)
+    print("newer -> older sound: " + String(older.ok()))
+    print("newer -> older title: " + readOlder.title)
+    match readOlder.state {
+        Idle -> print("newer -> older state: idle");
+        Loading(progress) -> print("newer -> older state: loading " + String(progress));
+        Failed(reason) -> print("newer -> older state: failed " + reason);
+    }
+
+    // Older peer -> newer reader. The fields the older build never wrote take
+    // the defaults the newer declaration gives them, so `zoom` is 1.0 and not 0.
+    var behind = ipcReader(out.bytes)
+    let readNewer = decode_TabSummaryNext(behind)
+    print("older -> newer sound: " + String(behind.ok()))
+    print("older -> newer title: " + readNewer.title)
+    print("older -> newer muted: " + String(readNewer.muted))
+    print("older -> newer zoom: " + String(readNewer.zoom))
+    print("older -> newer labels: " + String(readNewer.labels.count))
+
+    // An empty encoding is every field at its default, which is what a message
+    // from a peer that knows none of these fields decodes to.
+    let nothing = empty_TabSummary()
+    print("empty title: [" + nothing.title + "]")
+    return
+}

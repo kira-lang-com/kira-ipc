@@ -1,0 +1,98 @@
+import KiraIpc
+
+// A service and its caller, over a real channel.
+//
+// Both ends run here so the whole path is visible in one file: a name is
+// published, something connects to it, and a typed request goes one way while a
+// typed answer comes back the other. Between two processes nothing about this
+// changes but which half each one runs.
+
+@Derive(IpcMessage)
+struct OpenTab {
+    var address: String
+    var foreground: Bool
+}
+
+@Derive(IpcMessage)
+struct TabOpened {
+    var id: Int
+    var address: String
+}
+
+function browserService() -> String {
+    return "harmony.browser"
+}
+
+// The service half: read a request, answer it.
+//
+// It answers one call and returns, because that is all this example has to say.
+// A real service does the same thing in a loop beside whatever else it owns.
+function serveOnce(port: borrow mut IpcPort) -> Bool {
+    let delivery = port.pump()
+    if delivery.arrived() == false {
+        return false
+    }
+    if delivery.sound() == false {
+        // A frame that could not be believed. The peer is told so and the
+        // service stays up: a caller that can send nonsense must not be able to
+        // take the service down with it.
+        let ignored = port.fault(delivery.envelope.call, browserService(), delivery.envelope.method, [])
+        return true
+    }
+    var reader = ipcPayloadReader(delivery.envelope)
+    let asked = decode_OpenTab(reader)
+    print("service asked for: " + asked.address + " foreground=" + String(asked.foreground))
+
+    var answer = IpcWriter {}
+    encode_TabOpened(TabOpened { id: 41, address: asked.address }, answer)
+    let sent = port.respond(delivery.envelope.call, browserService(), "tabs.open", answer.bytes)
+    print("service answered: " + String(sent))
+    return true
+}
+
+@Main
+function entry() {
+    let endpoint = ipcListen("example-typed-channel")
+    print("published: " + String(endpoint.isOpen()))
+
+    var caller = ipcPort(ipcConnect("example-typed-channel"))
+    print("connected: " + String(caller.isOpen()))
+
+    var service = ipcPort(endpoint.accept())
+    print("accepted: " + String(service.isOpen()))
+
+    var request = IpcWriter {}
+    encode_OpenTab(OpenTab { address: "https://example.com", foreground: true }, request)
+    let call = caller.request(browserService(), "tabs.open", request.bytes)
+    print("call: " + String(call))
+
+    // Pumped rather than waited on. A socket hands a frame over when it is
+    // ready, and this is the same loop a window runs -- it simply has nothing
+    // else to do between turns.
+    var turns = 0
+    var served = false
+    while turns < 1000 && served == false {
+        served = serveOnce(service)
+        turns = turns + 1
+    }
+
+    var got = false
+    turns = 0
+    while turns < 1000 && got == false {
+        let delivery = caller.pump()
+        if delivery.arrived() {
+            got = true
+            print("answer sound: " + String(delivery.sound()))
+            print("answer is for call: " + String(delivery.envelope.call))
+            var reader = ipcPayloadReader(delivery.envelope)
+            let opened = decode_TabOpened(reader)
+            print("opened tab " + String(opened.id) + " at " + opened.address)
+        }
+        turns = turns + 1
+    }
+
+    caller.close()
+    service.close()
+    endpoint.close()
+    return
+}

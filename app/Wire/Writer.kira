@@ -1,0 +1,173 @@
+// Writing KIP/1.
+//
+// A writer is a byte array and a cursor's worth of arithmetic. It knows nothing
+// about messages: what a message IS lives in the encoder a derive generated, and
+// every one of those is written in terms of the field calls below.
+//
+// Nested values -- a message inside a message, an array of either -- are built
+// into a writer of their own and then handed over whole, because a
+// length-delimited region has to know its length before it can be written and
+// there is no way to know it but to build it. The copy that costs is one memcpy
+// of a control message, and buying it back with a placeholder and a backpatch
+// would mean varints of a fixed width, which is most of what the format saves.
+
+struct IpcWriter {
+    var bytes: [U8] = []
+
+    // --- Primitives ---------------------------------------------------------
+
+    function putByte(value: Int) {
+        self.bytes.append(U8(value & 255))
+        return
+    }
+
+    // LEB128: seven bits at a time, low group first, the high bit set on every
+    // group but the last.
+    //
+    // Unsigned, and taken as a U64, because that is the only spelling whose `>>`
+    // fills with zeros -- an Int's propagates the sign bit, and a loop shifting
+    // a negative one right never reaches zero.
+    function putVarUInt(value: U64) {
+        var rest = value
+        while rest >= U64(128) {
+            putByte(Int(rest & U64(127)) | 128)
+            rest = rest >> 7
+        }
+        putByte(Int(rest))
+        return
+    }
+
+    // Zigzag, so a small negative number costs one byte rather than ten.
+    //
+    // Plain two's-complement would make every negative value ten bytes of set
+    // high bits, and negatives are ordinary here: a scroll offset, a delta, a
+    // window origin off the left edge.
+    function putVarInt(value: Int) {
+        if value >= 0 {
+            putVarUInt(U64(value) * U64(2))
+            return
+        }
+        // `-(value + 1)` rather than `-value`, which has no positive twin at the
+        // bottom of the range.
+        putVarUInt(U64(0 - (value + 1)) * U64(2) + U64(1))
+        return
+    }
+
+    function putFixed(bits: U64) {
+        var rest = bits
+        var step = 0
+        while step < 8 {
+            putByte(Int(rest & U64(255)))
+            rest = rest >> 8
+            step = step + 1
+        }
+        return
+    }
+
+    function putRaw(source: borrow [U8]) {
+        var index = 0
+        while index < source.count {
+            self.bytes.append(source[index])
+            index = index + 1
+        }
+        return
+    }
+
+    function putBool(value: Bool) {
+        if value {
+            putVarUInt(U64(1))
+            return
+        }
+        putVarUInt(U64(0))
+        return
+    }
+
+    // Bit-exact, because a wire format that wrote a Float as decimal text would
+    // lose the low bits of every value it carried.
+    function putFloat(value: Float) {
+        putFixed(kira_ipc_f64_bits(value))
+        return
+    }
+
+    // A String is its UTF-8 bytes, length-prefixed. There is no escaping and
+    // nothing is forbidden inside it: the length says where it ends, so a title
+    // holding a quote, a semicolon or a brace crosses unremarkably.
+    function putString(value: borrow String) {
+        putVarUInt(U64(value.count))
+        var index = 0
+        while index < value.count {
+            putByte(value.charAt(index))
+            index = index + 1
+        }
+        return
+    }
+
+    function putBytes(value: borrow [U8]) {
+        putVarUInt(U64(value.count))
+        putRaw(value)
+        return
+    }
+
+    function putKey(tag: Int, wire: borrow IpcWire) {
+        putVarUInt(U64(ipcKey(tag, wire)))
+        return
+    }
+
+    // --- Fields -------------------------------------------------------------
+    //
+    // One call per field a message writes. Each is the key and then the value,
+    // in the one shape the key promised.
+
+    function intField(tag: Int, value: Int) {
+        putKey(tag, IpcWire.Var)
+        putVarInt(value)
+        return
+    }
+
+    // An unsigned field, whose values run past what an Int can carry.
+    function uintField(tag: Int, value: U64) {
+        putKey(tag, IpcWire.Var)
+        putVarUInt(value)
+        return
+    }
+
+    function boolField(tag: Int, value: Bool) {
+        putKey(tag, IpcWire.Var)
+        putBool(value)
+        return
+    }
+
+    function floatField(tag: Int, value: Float) {
+        putKey(tag, IpcWire.Fixed)
+        putFloat(value)
+        return
+    }
+
+    function stringField(tag: Int, value: borrow String) {
+        putKey(tag, IpcWire.Len)
+        putString(value)
+        return
+    }
+
+    function bytesField(tag: Int, value: borrow [U8]) {
+        putKey(tag, IpcWire.Len)
+        putBytes(value)
+        return
+    }
+
+    // A region built elsewhere, placed under this tag: a nested message, an
+    // array, an enum and its payload. What is inside it is the caller's; all
+    // this does is measure it and put it where it goes.
+    function regionField(tag: Int, region: borrow [U8]) {
+        putKey(tag, IpcWire.Len)
+        putVarUInt(U64(region.count))
+        putRaw(region)
+        return
+    }
+}
+
+// The writer a nested region is built in. Separate from `IpcWriter {}` only so
+// the intent reads at the call site.
+function ipcRegion() -> IpcWriter {
+    return IpcWriter {}
+}

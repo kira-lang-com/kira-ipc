@@ -1,0 +1,76 @@
+// KIP/1: what a field looks like on the wire, and why it looks like that.
+//
+// Two Harmony components are installed SEPARATELY. A machine can hold a browser
+// from one release beside an AI runtime from another, and the shell that talks
+// to both is whichever one was installed last. So the format's first duty is not
+// compactness: it is that a decoder built against an older or newer version of a
+// message can still read the fields it knows and step over the ones it does not.
+//
+// That rules out the obvious encoding. A struct written as its fields back to
+// back, in declaration order, is unreadable to a peer whose copy of that struct
+// has one more field in the middle -- and unreadable SILENTLY, as every field
+// after the insertion is read as its neighbour. So every field carries a KEY,
+// every value's length is discoverable from its key alone, and a decoder that
+// meets a key it does not know skips the value whole and keeps going.
+//
+// A field the encoder did not write is not an error either: the decoder starts
+// from the type's own defaults and overwrites only what arrived. Adding a field
+// to a message is therefore not a breaking change in either direction, which is
+// the property the whole install story rests on.
+
+// The three shapes a value can take, which is all a decoder needs to skip one it
+// does not understand.
+//
+// Three rather than one per type: the decoder skipping an unknown field must
+// know how far to jump, and nothing else. What the bytes MEAN is the generated
+// decoder's business, and it only ever reads fields it declared.
+enum IpcWire {
+    // A LEB128 varint. Every integer, every Bool, every enum tag.
+    Var
+    // Eight bytes, little-endian. A Float, and only a Float.
+    Fixed
+    // A varint byte count and that many bytes. A String, a Bytes field, a nested
+    // message, an array -- everything whose size is its own.
+    Len
+}
+
+// A key is one varint: the field's tag in the high bits, its wire shape in the
+// low two.
+//
+// Packing them together rather than writing two varints is what makes skipping
+// an unknown field cost one read: the shape arrives with the tag that identified
+// it as unknown, so the decoder never has to look further to know how far to go.
+function ipcWireCode(wire: borrow IpcWire) -> Int {
+    match wire {
+        Var -> return 0;
+        Fixed -> return 1;
+        Len -> return 2;
+    }
+}
+
+function ipcWireFromCode(code: Int) -> IpcWire {
+    if code == 1 {
+        return IpcWire.Fixed
+    }
+    if code == 2 {
+        return IpcWire.Len
+    }
+    // Code 3 is unassigned. Reading it as a varint is the recoverable answer: a
+    // varint is self-delimiting, so the decoder steps over the value and carries
+    // on rather than losing the rest of the frame to a length it cannot find.
+    return IpcWire.Var
+}
+
+function ipcKey(tag: Int, wire: borrow IpcWire) -> Int {
+    // The tag is one-based, so key 0 is not a field and a run of zero bytes at
+    // the end of a buffer cannot read as one.
+    return (tag << 2) | ipcWireCode(wire)
+}
+
+function ipcKeyTag(key: Int) -> Int {
+    return key >> 2
+}
+
+function ipcKeyWire(key: Int) -> IpcWire {
+    return ipcWireFromCode(key & 3)
+}
