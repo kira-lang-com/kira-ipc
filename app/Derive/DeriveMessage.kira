@@ -64,11 +64,14 @@
 
 comptime macro IpcMessage {
     kind { derive }
-    appliesTo { struct enum }
+    appliesTo { struct enum distinct }
 
     expand(target: Declaration) -> Syntax {
         if target.kind == .Enum {
             return ipcDeriveEnum(target)
+        }
+        if target.kind == .Distinct {
+            return ipcDeriveDistinct(target)
         }
         return ipcDeriveStruct(target)
     }
