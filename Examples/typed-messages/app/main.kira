@@ -52,12 +52,12 @@ struct TabSummaryNext {
 @Main
 function entry() {
     let sent = TabSummary {
-        id: 7
-        title: "A title with \" a quote; a semicolon and } a brace"
-        address: "https://example.com/search?q=a+b"
-        pinned: true
-        viewport: Rect { x: 0.0, y: 38.0, width: 1280.0, height: 762.0 }
-        state: LoadState.Loading(0.4)
+        id: 7,
+        title: "A title with \" a quote; a semicolon and } a brace",
+        address: "https://example.com/search?q=a+b",
+        pinned: true,
+        viewport: Rect { x: 0.0, y: 38.0, width: 1280.0, height: 762.0 },
+        state: LoadState.Loading(0.4),
         history: ["https://example.com", "https://example.com/one"]
     }
 
@@ -75,9 +75,9 @@ function entry() {
     print("viewport height: " + String(back.viewport.height))
     print("history: " + String(back.history.count) + " " + back.history[1])
     match back.state {
-        Idle -> print("state: idle");
-        Loading(progress) -> print("state: loading " + String(progress));
-        Failed(reason) -> print("state: failed " + reason);
+        Idle -> print("state: idle")
+        Loading(progress) -> print("state: loading " + String(progress))
+        Failed(reason) -> print("state: failed " + reason)
     }
 
     // A frame that stops halfway is the shape a crashed peer leaves behind. It
@@ -102,15 +102,15 @@ function entry() {
     // Newer peer -> older reader. The three appended fields are skipped whole,
     // and every field this build does know arrives intact.
     let ahead = TabSummaryNext {
-        id: 9
-        title: "From a newer build"
-        address: "https://example.com/next"
-        pinned: false
-        viewport: Rect { x: 0.0, y: 38.0, width: 800.0, height: 600.0 }
-        state: LoadState.Failed("offline")
-        history: ["https://example.com"]
-        muted: true
-        zoom: 1.25
+        id: 9,
+        title: "From a newer build",
+        address: "https://example.com/next",
+        pinned: false,
+        viewport: Rect { x: 0.0, y: 38.0, width: 800.0, height: 600.0 },
+        state: LoadState.Failed("offline"),
+        history: ["https://example.com"],
+        muted: true,
+        zoom: 1.25,
         labels: ["work", "reading"]
     }
     var aheadBytes = IpcWriter {}
@@ -120,9 +120,9 @@ function entry() {
     print("newer -> older sound: " + String(older.ok()))
     print("newer -> older title: " + readOlder.title)
     match readOlder.state {
-        Idle -> print("newer -> older state: idle");
-        Loading(progress) -> print("newer -> older state: loading " + String(progress));
-        Failed(reason) -> print("newer -> older state: failed " + reason);
+        Idle -> print("newer -> older state: idle")
+        Loading(progress) -> print("newer -> older state: loading " + String(progress))
+        Failed(reason) -> print("newer -> older state: failed " + reason)
     }
 
     // Older peer -> newer reader. The fields the older build never wrote take

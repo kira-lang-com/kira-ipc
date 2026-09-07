@@ -217,9 +217,9 @@ struct IpcReader {
 function ipcReader(bytes: [U8]) -> IpcReader {
     let count = bytes.count
     return IpcReader {
-        bytes: move bytes
-        cursor: 0
-        limit: count
+        bytes: move bytes,
+        cursor: 0,
+        limit: count,
         failed: false
     }
 }

@@ -68,10 +68,10 @@ struct IpcPort {
         let call = nextCall
         self.nextCall = self.nextCall + 1
         let sent = channel.sendEnvelope(IpcEnvelope {
-            service: service
-            method: method
-            kind: IpcKind.Request
-            call: call
+            service: service,
+            method: method,
+            kind: IpcKind.Request,
+            call: call,
             payload: payload
         })
         if sent == false {
@@ -82,10 +82,10 @@ struct IpcPort {
 
     function respond(call: Int, service: borrow String, method: borrow String, payload: borrow [U8]) -> Bool {
         return channel.sendEnvelope(IpcEnvelope {
-            service: service
-            method: method
-            kind: IpcKind.Response
-            call: call
+            service: service,
+            method: method,
+            kind: IpcKind.Response,
+            call: call,
             payload: payload
         })
     }
@@ -95,10 +95,10 @@ struct IpcPort {
     // refusal looks like -- rather than a string this layer invented.
     function fault(call: Int, service: borrow String, method: borrow String, payload: borrow [U8]) -> Bool {
         return channel.sendEnvelope(IpcEnvelope {
-            service: service
-            method: method
-            kind: IpcKind.Fault
-            call: call
+            service: service,
+            method: method,
+            kind: IpcKind.Fault,
+            call: call,
             payload: payload
         })
     }
@@ -109,10 +109,10 @@ struct IpcPort {
     // told what it now has, and there is nothing to answer.
     function emitHandle(service: borrow String, method: borrow String, payload: borrow [U8], handle: Int) -> Bool {
         return channel.sendEnvelopeWithHandle(IpcEnvelope {
-            service: service
-            method: method
-            kind: IpcKind.Event
-            call: 0
+            service: service,
+            method: method,
+            kind: IpcKind.Event,
+            call: 0,
             payload: payload
         }, handle)
     }
@@ -120,10 +120,10 @@ struct IpcPort {
     // Announce something. No call number, because nothing is waiting.
     function emit(service: borrow String, method: borrow String, payload: borrow [U8]) -> Bool {
         return channel.sendEnvelope(IpcEnvelope {
-            service: service
-            method: method
-            kind: IpcKind.Event
-            call: 0
+            service: service,
+            method: method,
+            kind: IpcKind.Event,
+            call: 0,
             payload: payload
         })
     }
@@ -145,8 +145,8 @@ struct IpcPort {
             kind = IpcDeliveryKind.Sound
         }
         return IpcDelivery {
-            kind: move kind
-            envelope: arrival.envelope
+            kind: move kind,
+            envelope: arrival.envelope,
             handle: frame.handle
         }
     }
@@ -159,7 +159,7 @@ struct IpcPort {
 
 function ipcPort(channel: IpcChannel) -> IpcPort {
     return IpcPort {
-        channel: move channel
+        channel: move channel,
         nextCall: 1
     }
 }

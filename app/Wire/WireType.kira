@@ -42,9 +42,9 @@ enum IpcWire {
 // it as unknown, so the decoder never has to look further to know how far to go.
 function ipcWireCode(wire: borrow IpcWire) -> Int {
     match wire {
-        Var -> return 0;
-        Fixed -> return 1;
-        Len -> return 2;
+        Var -> return 0
+        Fixed -> return 1
+        Len -> return 2
     }
 }
 

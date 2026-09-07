@@ -65,7 +65,7 @@ function ipcArrival(bytes: [U8]) -> IpcArrival {
     var reader = ipcReader(move bytes)
     let envelope = decode_IpcEnvelope(reader)
     return IpcArrival {
-        envelope: move envelope
+        envelope: move envelope,
         sound: reader.ok()
     }
 }

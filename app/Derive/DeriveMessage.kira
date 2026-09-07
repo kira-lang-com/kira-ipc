@@ -409,7 +409,7 @@ comptime function ipcDeriveStruct(target: Declaration) -> Syntax {
                 }
             }
             return #{target.name} {
-                #{fields}
+                #{Syntax.join(fields, ", ")}
             }
         }
 
@@ -447,7 +447,7 @@ comptime function ipcDeriveEnum(target: Declaration) -> Syntax {
         let payload: Syntax = variant.type.asSyntax()
         let name = variant.name
         if payload == "" {
-            writes.append(quote { #{name} -> out.putVarUInt(U64(#{index})); })
+            writes.append(quote { #{name} -> out.putVarUInt(U64(#{index})) })
             reads.append(quote {
                 if variant == #{index} {
                     return .#{name}
