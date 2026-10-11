@@ -47,11 +47,19 @@ struct IpcEnvelope {
     var payload: [U8]
 }
 
-// The bytes of one frame.
-function ipcEnvelopeBytes(envelope: borrow IpcEnvelope) -> [U8] {
-    var out = IpcWriter {}
-    encode_IpcEnvelope(envelope, out)
-    return out.bytes
+extend IpcEnvelope {
+    // The bytes of one frame.
+    function encoded() -> [U8] {
+        var out = IpcWriter {}
+        encode_IpcEnvelope(self, out)
+        return out.bytes
+    }
+
+    // A reader over the delivered payload, for the generated decoder of
+    // whatever the method carries.
+    function payloadReader() -> IpcReader {
+        return frameReader(payload)
+    }
 }
 
 // A frame's envelope, and whether the frame was sound.
@@ -63,14 +71,8 @@ struct IpcArrival {
     var sound: Bool
 }
 
-function ipcArrival(bytes: [U8]) -> IpcArrival {
-    var reader = ipcReader(move bytes)
+function arrival(bytes: [U8]) -> IpcArrival {
+    var reader = frameReader(move bytes)
     let envelope = decode_IpcEnvelope(reader)
     return IpcArrival { envelope: move envelope, sound: reader.ok() }
-}
-
-// A reader over a delivered payload, for the generated decoder of whatever the
-// method carries.
-function ipcPayloadReader(envelope: borrow IpcEnvelope) -> IpcReader {
-    return ipcReader(envelope.payload)
 }

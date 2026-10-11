@@ -18,7 +18,7 @@ struct IpcWriter {
 
     // --- Primitives ---------------------------------------------------------
 
-    function putByte(borrow mut self, value: Int) {
+    function putByte(borrow mut self, value: Number) {
         self.bytes.append(U8(value & 255))
     }
 
@@ -31,10 +31,10 @@ struct IpcWriter {
     function putVarUInt(borrow mut self, value: U64) {
         var rest = value
         while rest >= U64(128) {
-            putByte(Int(rest & U64(127)) | 128)
+            putByte(Number(rest & U64(127)) | 128)
             rest = rest >> 7
         }
-        putByte(Int(rest))
+        putByte(Number(rest))
     }
 
     // Zigzag, so a small negative number costs one byte rather than ten.
@@ -49,24 +49,20 @@ struct IpcWriter {
         }
         // `-(value + 1)` rather than `-value`, which has no positive twin at the
         // bottom of the range.
-        putVarUInt(U64(0 - (value + 1)) * U64(2) + U64(1))
+        putVarUInt(U64(-(value + 1)) * U64(2) + U64(1))
     }
 
     function putFixed(borrow mut self, bits: U64) {
         var rest = bits
-        var step = 0
-        while step < 8 {
-            putByte(Int(rest & U64(255)))
+        for _ in 0..8 {
+            putByte(Number(rest & U64(255)))
             rest = rest >> 8
-            step = step + 1
         }
     }
 
     function putRaw(borrow mut self, source: borrow [U8]) {
-        var index = 0
-        while index < source.count {
-            self.bytes.append(source[index])
-            index = index + 1
+        for byte in source {
+            self.bytes.append(byte)
         }
     }
 
@@ -89,10 +85,8 @@ struct IpcWriter {
     // holding a quote, a semicolon or a brace crosses unremarkably.
     function putString(borrow mut self, value: borrow String) {
         putVarUInt(U64(value.count))
-        var index = 0
-        while index < value.count {
+        for index in 0..value.count {
             putByte(value.charAt(index))
-            index = index + 1
         }
     }
 
@@ -101,8 +95,8 @@ struct IpcWriter {
         putRaw(value)
     }
 
-    function putKey(borrow mut self, tag: Int, wire: borrow IpcWire) {
-        putVarUInt(U64(ipcKey(tag, wire)))
+    function putKey(borrow mut self, tag: Number, wire: borrow IpcWire) {
+        putVarUInt(U64(WireKey.make(tag, wire)))
     }
 
     // --- Fields -------------------------------------------------------------
@@ -110,33 +104,33 @@ struct IpcWriter {
     // One call per field a message writes. Each is the key and then the value,
     // in the one shape the key promised.
 
-    function intField(borrow mut self, tag: Int, value: Int) {
+    function intField(borrow mut self, tag: Number, value: Int) {
         putKey(tag, IpcWire.Var)
         putVarInt(value)
     }
 
     // An unsigned field, whose values run past what an Int can carry.
-    function uintField(borrow mut self, tag: Int, value: U64) {
+    function uintField(borrow mut self, tag: Number, value: U64) {
         putKey(tag, IpcWire.Var)
         putVarUInt(value)
     }
 
-    function boolField(borrow mut self, tag: Int, value: Bool) {
+    function boolField(borrow mut self, tag: Number, value: Bool) {
         putKey(tag, IpcWire.Var)
         putBool(value)
     }
 
-    function floatField(borrow mut self, tag: Int, value: Float) {
+    function floatField(borrow mut self, tag: Number, value: Float) {
         putKey(tag, IpcWire.Fixed)
         putFloat(value)
     }
 
-    function stringField(borrow mut self, tag: Int, value: borrow String) {
+    function stringField(borrow mut self, tag: Number, value: borrow String) {
         putKey(tag, IpcWire.Len)
         putString(value)
     }
 
-    function bytesField(borrow mut self, tag: Int, value: borrow [U8]) {
+    function bytesField(borrow mut self, tag: Number, value: borrow [U8]) {
         putKey(tag, IpcWire.Len)
         putBytes(value)
     }
@@ -144,15 +138,9 @@ struct IpcWriter {
     // A region built elsewhere, placed under this tag: a nested message, an
     // array, an enum and its payload. What is inside it is the caller's; all
     // this does is measure it and put it where it goes.
-    function regionField(borrow mut self, tag: Int, region: borrow [U8]) {
+    function regionField(borrow mut self, tag: Number, region: borrow [U8]) {
         putKey(tag, IpcWire.Len)
         putVarUInt(U64(region.count))
         putRaw(region)
     }
-}
-
-// The writer a nested region is built in. Separate from `IpcWriter {}` only so
-// the intent reads at the call site.
-function ipcRegion() -> IpcWriter {
-    return IpcWriter {}
 }

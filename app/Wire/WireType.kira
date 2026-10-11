@@ -42,37 +42,41 @@ enum IpcWire {
 // Packing them together rather than writing two varints is what makes skipping
 // an unknown field cost one read: the shape arrives with the tag that identified
 // it as unknown, so the decoder never has to look further to know how far to go.
-function ipcWireCode(wire: borrow IpcWire) -> Int {
-    match wire {
-        Var -> return 0
-        Fixed -> return 1
-        Len -> return 2
+extend IpcWire {
+    function keyBits() -> Number {
+        match self {
+            Var -> return 0
+            Fixed -> return 1
+            Len -> return 2
+        }
     }
 }
 
-function ipcWireFromCode(code: Int) -> IpcWire {
-    if code == 1 {
-        return IpcWire.Fixed
+namespace WireKey {
+    // The shape a two-bit code names.
+    function shape(code: Number) -> IpcWire {
+        match code {
+            1 -> return IpcWire.Fixed
+            2 -> return IpcWire.Len
+            // Code 3 is unassigned. Reading it as a varint is the recoverable
+            // answer: a varint is self-delimiting, so the decoder steps over the
+            // value and carries on rather than losing the rest of the frame to a
+            // length it cannot find.
+            else -> return IpcWire.Var
+        }
     }
-    if code == 2 {
-        return IpcWire.Len
+
+    function make(tag: Number, wire: borrow IpcWire) -> Number {
+        // The tag is one-based, so key 0 is not a field and a run of zero bytes
+        // at the end of a buffer cannot read as one.
+        return (tag << 2) | wire.keyBits()
     }
-    // Code 3 is unassigned. Reading it as a varint is the recoverable answer: a
-    // varint is self-delimiting, so the decoder steps over the value and carries
-    // on rather than losing the rest of the frame to a length it cannot find.
-    return IpcWire.Var
-}
 
-function ipcKey(tag: Int, wire: borrow IpcWire) -> Int {
-    // The tag is one-based, so key 0 is not a field and a run of zero bytes at
-    // the end of a buffer cannot read as one.
-    return (tag << 2) | ipcWireCode(wire)
-}
+    function tag(key: Number) -> Number {
+        return key >> 2
+    }
 
-function ipcKeyTag(key: Int) -> Int {
-    return key >> 2
-}
-
-function ipcKeyWire(key: Int) -> IpcWire {
-    return ipcWireFromCode(key & 3)
+    function wire(key: Number) -> IpcWire {
+        return WireKey.shape(key & 3)
+    }
 }

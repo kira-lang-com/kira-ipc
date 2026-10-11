@@ -73,7 +73,7 @@ struct IpcPort {
         payload: borrow [U8]
     ) -> Number {
         let call = nextCall
-        self.nextCall = self.nextCall + 1
+        nextCall++
         let sent = channel.sendEnvelope(
             IpcEnvelope {
                 service: service,
@@ -83,7 +83,7 @@ struct IpcPort {
                 payload: payload
             }
         )
-        if sent == false {
+        if !sent {
             return 0
         }
         return call
@@ -172,7 +172,7 @@ struct IpcPort {
         if frame.bytes.count == 0 {
             return IpcDelivery {}
         }
-        let arrival = ipcArrival(frame.bytes)
+        let arrival = arrival(frame.bytes)
         var kind = IpcDeliveryKind.Unreadable
         if arrival.sound {
             kind = IpcDeliveryKind.Sound
@@ -185,6 +185,6 @@ struct IpcPort {
     }
 }
 
-function ipcPort(channel: IpcChannel) -> IpcPort {
+function port(channel: IpcChannel) -> IpcPort {
     return IpcPort { channel: move channel, nextCall: 1 }
 }

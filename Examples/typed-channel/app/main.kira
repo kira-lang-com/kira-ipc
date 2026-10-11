@@ -19,7 +19,7 @@ struct OpenTab {
 
 @Derive(IpcMessage)
 struct TabOpened {
-    var id: Int
+    var id: Number
     var address: String
 }
 
@@ -29,17 +29,22 @@ struct TabOpened {
 // A real service does the same thing in a loop beside whatever else it owns.
 function serveOnce(port: borrow mut IpcPort) -> Bool {
     let delivery = port.pump()
-    if delivery.arrived() == false {
+    if !delivery.arrived() {
         return false
     }
-    if delivery.sound() == false {
+    if !delivery.sound() {
         // A frame that could not be believed. The peer is told so and the
         // service stays up: a caller that can send nonsense must not be able to
         // take the service down with it.
-        let ignored = port.fault(delivery.envelope.call, ServiceName.browser, delivery.envelope.method, [])
+        let ignored = port.fault(
+            delivery.envelope.call,
+            ServiceName.browser,
+            delivery.envelope.method,
+            []
+        )
         return true
     }
-    var reader = ipcPayloadReader(delivery.envelope)
+    var reader = delivery.envelope.payloadReader()
     let asked = decode_OpenTab(reader)
     print("service asked for: " + asked.address + " foreground=" + String(asked.foreground))
 
@@ -52,13 +57,13 @@ function serveOnce(port: borrow mut IpcPort) -> Bool {
 
 @Main
 function entry() {
-    let endpoint = ipcListen("example-typed-channel")
+    let endpoint = listen("example-typed-channel")
     print("published: " + String(endpoint.isOpen()))
 
-    var caller = ipcPort(ipcConnect("example-typed-channel"))
+    var caller = port(connect("example-typed-channel"))
     print("connected: " + String(caller.isOpen()))
 
-    var service = ipcPort(endpoint.accept())
+    var service = port(endpoint.accept())
     print("accepted: " + String(service.isOpen()))
 
     var request = IpcWriter {}
@@ -71,24 +76,24 @@ function entry() {
     // else to do between turns.
     var turns = 0
     var served = false
-    while turns < 1000 && served == false {
+    while turns < 1000 && !served {
         served = serveOnce(service)
-        turns = turns + 1
+        turns++
     }
 
     var got = false
     turns = 0
-    while turns < 1000 && got == false {
+    while turns < 1000 && !got {
         let delivery = caller.pump()
         if delivery.arrived() {
             got = true
             print("answer sound: " + String(delivery.sound()))
             print("answer is for call: " + String(delivery.envelope.call))
-            var reader = ipcPayloadReader(delivery.envelope)
+            var reader = delivery.envelope.payloadReader()
             let opened = decode_TabOpened(reader)
             print("opened tab " + String(opened.id) + " at " + opened.address)
         }
-        turns = turns + 1
+        turns++
     }
 
     caller.close()

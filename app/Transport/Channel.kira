@@ -78,7 +78,7 @@ struct IpcChannel {
     }
 
     function sendEnvelope(envelope: borrow IpcEnvelope) -> Bool {
-        return send(ipcEnvelopeBytes(envelope))
+        return send(envelope.encoded())
     }
 
     // Send a frame and hand an OS handle over with it.
@@ -96,7 +96,7 @@ struct IpcChannel {
     }
 
     function sendEnvelopeWithHandle(envelope: borrow IpcEnvelope, handle: Int) -> Bool {
-        return sendHandleWith(ipcEnvelopeBytes(envelope), handle)
+        return sendHandleWith(envelope.encoded(), handle)
     }
 
     // The frame waiting on this channel, or an empty one when none is.
@@ -113,7 +113,7 @@ struct IpcChannel {
         if id <= 0 {
             return IpcFrame { bytes: move frame, handle: 0 }
         }
-        let length = Int(kira_ipc_poll(I32(id)))
+        let length = Number(kira_ipc_poll(I32(id)))
         if length <= 0 {
             return IpcFrame { bytes: move frame, handle: 0 }
         }
@@ -128,7 +128,7 @@ struct IpcChannel {
                 present = 8
             }
             for _ in 0..present {
-                frame.append(U8(Int(word & U64(255))))
+                frame.append(U8(Number(word & U64(255))))
                 word = word >> 8
             }
         }
@@ -146,7 +146,7 @@ struct IpcChannel {
 
 // Publish a name and start accepting on it. A closed endpoint means the name
 // could not be taken, which usually means something else already holds it.
-function ipcListen(name: borrow String) -> IpcEndpoint {
+function listen(name: borrow String) -> IpcEndpoint {
     return IpcEndpoint { id: Int(kira_ipc_listen(name)) }
 }
 
@@ -156,6 +156,6 @@ function ipcListen(name: borrow String) -> IpcEndpoint {
 // when the AI runtime is not installed, and what it gets when the runtime is
 // installed but has not come up yet. Both are handled the same way -- the
 // features that need it stay off -- so neither is worth distinguishing here.
-function ipcConnect(name: borrow String) -> IpcChannel {
+function connect(name: borrow String) -> IpcChannel {
     return IpcChannel { id: Int(kira_ipc_connect(name)) }
 }

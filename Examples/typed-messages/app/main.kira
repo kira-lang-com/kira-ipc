@@ -23,7 +23,7 @@ enum LoadState {
 
 @Derive(IpcMessage)
 struct TabSummary {
-    var id: Int
+    var id: Number
     var title: String
     var address: String
     var pinned: Bool
@@ -37,7 +37,7 @@ struct TabSummary {
 // beside it was installed from a newer release than the browser was.
 @Derive(IpcMessage)
 struct TabSummaryNext {
-    var id: Int
+    var id: Number
     var title: String
     var address: String
     var pinned: Bool
@@ -65,7 +65,7 @@ function entry() {
     encode_TabSummary(sent, out)
     print("encoded bytes: " + String(out.bytes.count))
 
-    var input = ipcReader(out.bytes)
+    var input = frameReader(out.bytes)
     let back = decode_TabSummary(input)
     print("sound: " + String(input.ok()))
     print("id: " + String(back.id))
@@ -86,7 +86,7 @@ function entry() {
     for index in 0..out.bytes.count / 2 {
         truncated.append(out.bytes[index])
     }
-    var short = ipcReader(move truncated)
+    var short = frameReader(move truncated)
     let partial = decode_TabSummary(short)
     print("truncated sound: " + String(short.ok()))
     print("truncated id: " + String(partial.id))
@@ -113,7 +113,7 @@ function entry() {
     }
     var aheadBytes = IpcWriter {}
     encode_TabSummaryNext(ahead, aheadBytes)
-    var older = ipcReader(aheadBytes.bytes)
+    var older = frameReader(aheadBytes.bytes)
     let readOlder = decode_TabSummary(older)
     print("newer -> older sound: " + String(older.ok()))
     print("newer -> older title: " + readOlder.title)
@@ -125,7 +125,7 @@ function entry() {
 
     // Older peer -> newer reader. The fields the older build never wrote take
     // the defaults the newer declaration gives them, so `zoom` is 1.0 and not 0.
-    var behind = ipcReader(out.bytes)
+    var behind = frameReader(out.bytes)
     let readNewer = decode_TabSummaryNext(behind)
     print("older -> newer sound: " + String(behind.ok()))
     print("older -> newer title: " + readNewer.title)

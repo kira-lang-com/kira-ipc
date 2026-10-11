@@ -71,12 +71,12 @@ comptime macro IpcMessage {
 
     expand(target: Declaration) -> Syntax {
         if target.kind == .Enum {
-            return ipcDeriveEnum(target)
+            return deriveEnum(target)
         }
         if target.kind == .Distinct {
-            return ipcDeriveDistinct(target)
+            return deriveDistinct(target)
         }
-        return ipcDeriveStruct(target)
+        return deriveStruct(target)
     }
 }
 
@@ -85,34 +85,23 @@ comptime macro IpcMessage {
 // A string rather than an enum because a comptime macro's own declarations are
 // blanked before analysis, so an enum declared for this would not exist by the
 // time anything could match on it.
-// The kind a BARE type name is carried as. Split out from `ipcFieldKind` so an
+// The kind a BARE type name is carried as. Split out from `fieldKind` so an
 // array's element -- which arrives as an `Identifier`, not as a type's source --
 // is classified by exactly the same table rather than by a second one that could
 // disagree with it.
-comptime function ipcScalarKind(name: borrow String) -> String {
-    for candidate in ["Number", "Int", "I8", "I16", "I32", "I64", "U8", "U16", "U32"] {
-        if name == candidate {
-            return "int"
-        }
+comptime function scalarKind(name: borrow String) -> String {
+    match name {
+        "Number", "Int", "I8", "I16", "I32", "I64", "U8", "U16", "U32" -> return "int"
+        "U64" -> return "uint"
+        "Bool" -> return "bool"
+        "String" -> return "string"
+        "Float", "F32", "F64" -> return "float"
+        // Anything else names a type, and a type that crosses is a message. A
+        // name with no `encode_` beside it surfaces as an ordinary unknown-call
+        // diagnostic, which is the right one: the fix is deriving IpcMessage
+        // there.
+        else -> return "message"
     }
-    if name == "U64" {
-        return "uint"
-    }
-    if name == "Bool" {
-        return "bool"
-    }
-    if name == "String" {
-        return "string"
-    }
-    for candidate in ["Float", "F32", "F64"] {
-        if name == candidate {
-            return "float"
-        }
-    }
-    // Anything else names a type, and a type that crosses is a message. A name
-    // with no `encode_` beside it surfaces as an ordinary unknown-call
-    // diagnostic, which is the right one: the fix is deriving IpcMessage there.
-    return "message"
 }
 
 // How a field is carried, decided once and read by every generator below.
@@ -120,7 +109,7 @@ comptime function ipcScalarKind(name: borrow String) -> String {
 // A string rather than an enum because a comptime macro's own declarations are
 // blanked before analysis, so an enum declared for this would not exist by the
 // time anything could match on it.
-comptime function ipcFieldKind(source: borrow Syntax) -> String {
+comptime function fieldKind(source: borrow Syntax) -> String {
     var joined: String = ""
     for id in source.identifiers() {
         joined = joined + id.asString()
@@ -129,7 +118,7 @@ comptime function ipcFieldKind(source: borrow Syntax) -> String {
     // source. `[Int]` gives `Int`, which is not `[Int]`, and that one test tells
     // an array from a name without pattern-matching source text.
     if source == joined {
-        return ipcScalarKind(joined)
+        return scalarKind(joined)
     }
     if source == "[" + joined + "]" {
         if joined == "U8" {
@@ -142,110 +131,86 @@ comptime function ipcFieldKind(source: borrow Syntax) -> String {
 
 // The wire shape a kind is written in, which is what a decoder checks a key
 // against before trusting the tag on it.
-comptime function ipcKindWire(kind: borrow String) -> Int {
-    if kind == "float" {
-        return 1
+comptime function kindWire(kind: borrow String) -> Number {
+    match kind {
+        "float" -> return 1
+        "string", "bytes", "array", "message" -> return 2
+        else -> return 0
     }
-    if kind == "string" {
-        return 2
-    }
-    if kind == "bytes" {
-        return 2
-    }
-    if kind == "array" {
-        return 2
-    }
-    if kind == "message" {
-        return 2
-    }
-    return 0
 }
 
-comptime function ipcDeriveStruct(target: borrow Declaration) -> Syntax {
+comptime function deriveStruct(target: borrow Declaration) -> Syntax {
     var encodes: [Syntax] = []
     var locals: [Syntax] = []
     var arms: [Syntax] = []
     var fields: [Syntax] = []
-    var tag: Int = 1
+    var tag: Number = 1
     for field in target.fields {
         let source: Syntax = field.type.asSyntax()
-        let kind: String = ipcFieldKind(source)
+        let kind: String = fieldKind(source)
         if kind == "unsupported" {
             Diagnostics.error(
                 "Derive(IpcMessage): a field must be a scalar, a String, [U8], an array of those, or another @Derive(IpcMessage) type — and a nested or element type must be written unqualified",
                 at: target.syntax
             )
         }
-        let wire: Int = ipcKindWire(kind)
+        let wire: Number = kindWire(kind)
         let name = field.name
 
         // --- what the encoder writes for this field -------------------------
-        if kind == "int" {
-            encodes.append(quote { out.intField(#{tag}, Int(v.#{name})) })
-        }
-        if kind == "uint" {
-            encodes.append(quote { out.uintField(#{tag}, v.#{name}) })
-        }
-        if kind == "bool" {
-            encodes.append(quote { out.boolField(#{tag}, v.#{name}) })
-        }
-        if kind == "float" {
-            encodes.append(quote { out.floatField(#{tag}, Float(v.#{name})) })
-        }
-        if kind == "string" {
-            encodes.append(quote { out.stringField(#{tag}, v.#{name}) })
-        }
-        if kind == "bytes" {
-            encodes.append(quote { out.bytesField(#{tag}, v.#{name}) })
-        }
-        if kind == "message" {
-            // Built whole and then placed, because a length-delimited region has
-            // to know its length and there is no way to know it but to build it.
-            encodes.append(
-                quote {
-                    var region_#{name} = ipcRegion()
-                    encode_#{source}(v.#{name}, region_#{name})
-                    out.regionField(#{tag}, region_#{name}.bytes)
-                }
-            )
-        }
-        if kind == "array" {
-            let element: Identifier = source.identifiers()[0]
-            let elementKind: String = ipcScalarKind(element.asString())
-            var put: Syntax = quote {}
-            if elementKind == "int" {
-                put = quote { region_#{name}.putVarInt(Int(v.#{name} [index_#{name}])) }
-            }
-            if elementKind == "uint" {
-                put = quote { region_#{name}.putVarUInt(v.#{name} [index_#{name}]) }
-            }
-            if elementKind == "bool" {
-                put = quote { region_#{name}.putBool(v.#{name} [index_#{name}]) }
-            }
-            if elementKind == "float" {
-                put = quote { region_#{name}.putFloat(Float(v.#{name} [index_#{name}])) }
-            }
-            if elementKind == "string" {
-                put = quote { region_#{name}.putString(v.#{name} [index_#{name}]) }
-            }
-            if elementKind == "message" {
-                put = quote {
-                    var item_#{name} = ipcRegion()
-                    encode_#{element}(v.#{name} [index_#{name}], item_#{name})
-                    region_#{name}.putBytes(item_#{name}.bytes)
-                }
-            }
-            if elementKind == "bytes" || elementKind == "array" || elementKind == "unsupported" {
-                Diagnostics.error(
-                    "Derive(IpcMessage): an array's elements must be a scalar, a String, or another @Derive(IpcMessage) type — an array of arrays or of [U8] has no encoding",
-                    at: target.syntax
+        match kind {
+            "int" -> encodes.append(quote { out.intField(#{tag}, Int(v.#{name})) })
+            "uint" -> encodes.append(quote { out.uintField(#{tag}, v.#{name}) })
+            "bool" -> encodes.append(quote { out.boolField(#{tag}, v.#{name}) })
+            "float" -> encodes.append(quote { out.floatField(#{tag}, Float(v.#{name})) })
+            "string" -> encodes.append(quote { out.stringField(#{tag}, v.#{name}) })
+            "bytes" -> encodes.append(quote { out.bytesField(#{tag}, v.#{name}) })
+            "message" -> {
+                // Built whole and then placed, because a length-delimited region has
+                // to know its length and there is no way to know it but to build it.
+                encodes.append(
+                    quote {
+                        var region_#{name} = IpcWriter {}
+                        encode_#{source}(v.#{name}, region_#{name})
+                        out.regionField(#{tag}, region_#{name}.bytes)
+                    }
                 )
+            }
+            "array" -> {
+                let element: Identifier = source.identifiers()[0]
+                let elementKind: String = scalarKind(element.asString())
+                var put: Syntax = quote {}
+                match elementKind {
+                    "int" -> put = quote {
+                        region_#{name}.putVarInt(Int(v.#{name} [index_#{name}]))
+                    }
+                    "uint" -> put = quote { region_#{name}.putVarUInt(v.#{name} [index_#{name}]) }
+                    "bool" -> put = quote { region_#{name}.putBool(v.#{name} [index_#{name}]) }
+                    "float" -> put = quote {
+                        region_#{name}.putFloat(Float(v.#{name} [index_#{name}]))
+                    }
+                    "string" -> put = quote { region_#{name}.putString(v.#{name} [index_#{name}]) }
+                    "message" -> {
+                        put = quote {
+                            var item_#{name} = IpcWriter {}
+                            encode_#{element}(v.#{name} [index_#{name}], item_#{name})
+                            region_#{name}.putBytes(item_#{name}.bytes)
+
+                    }
+                }
+                "bytes", "array", "unsupported" -> {
+                    Diagnostics.error(
+                        "Derive(IpcMessage): an array's elements must be a scalar, a String, or another @Derive(IpcMessage) type — an array of arrays or of [U8] has no encoding",
+                        at: target.syntax
+                    )
+                }
+                else -> {}
             }
             // The count leads the region so a decoder can size its array once
             // rather than growing it per element.
             encodes.append(
                 quote {
-                    var region_#{name} = ipcRegion()
+                    var region_#{name} = IpcWriter {}
                     region_#{name}.putVarUInt(U64(v.#{name}.count))
                     for index_#{name} in 0..v.#{name}.count {
                         #{put}
@@ -254,38 +219,32 @@ comptime function ipcDeriveStruct(target: borrow Declaration) -> Syntax {
                 }
             )
         }
+        else -> {}
+    }
 
-        // --- the local the decoder accumulates into -------------------------
-        //
-        // Seeded with the field's own default when it declared one, and with the
-        // type's zero otherwise. A field the peer did not send keeps whatever it
-        // is seeded with, which is the whole of what makes an appended field
-        // safe to meet.
-        if field.initializer == "" {
-            if kind == "int" || kind == "uint" {
-                locals.append(quote { var slot_#{name}: #{source} = 0 })
-            }
-            if kind == "bool" {
-                locals.append(quote { var slot_#{name}: #{source} = false })
-            }
-            if kind == "float" {
-                locals.append(quote { var slot_#{name}: #{source} = 0.0 })
-            }
-            if kind == "string" {
-                locals.append(quote { var slot_#{name}: #{source} = "" })
-            }
-            if kind == "bytes" || kind == "array" {
-                locals.append(quote { var slot_#{name}: #{source} = [] })
-            }
-            if kind == "message" {
-                locals.append(quote { var slot_#{name}: #{source} = empty_#{source}() })
-            }
-        } else {
-            locals.append(quote { var slot_#{name}: #{source} = #{field.initializer} })
+    // --- the local the decoder accumulates into -------------------------
+    //
+    // Seeded with the field's own default when it declared one, and with the
+    // type's zero otherwise. A field the peer did not send keeps whatever it
+    // is seeded with, which is the whole of what makes an appended field
+    // safe to meet.
+    if field.initializer == "" {
+        match kind {
+            "int", "uint" -> locals.append(quote { var slot_#{name}: #{source} = 0 })
+            "bool" -> locals.append(quote { var slot_#{name}: #{source} = false })
+            "float" -> locals.append(quote { var slot_#{name}: #{source} = 0.0 })
+            "string" -> locals.append(quote { var slot_#{name}: #{source} = "" })
+            "bytes", "array" -> locals.append(quote { var slot_#{name}: #{source} = [] })
+            "message" -> locals.append(quote { var slot_#{name}: #{source} = empty_#{source}() })
+            else -> {}
         }
+    } else {
+        locals.append(quote { var slot_#{name}: #{source} = #{field.initializer} })
+    }
 
-        // --- the arm that reads it ------------------------------------------
-        if kind == "int" {
+    // --- the arm that reads it ------------------------------------------
+    match kind {
+        "int" -> {
             arms.append(
                 quote {
                     if tag == #{tag} && wire == #{wire} {
@@ -295,7 +254,7 @@ comptime function ipcDeriveStruct(target: borrow Declaration) -> Syntax {
                 }
             )
         }
-        if kind == "uint" {
+        "uint" -> {
             arms.append(
                 quote {
                     if tag == #{tag} && wire == #{wire} {
@@ -305,7 +264,7 @@ comptime function ipcDeriveStruct(target: borrow Declaration) -> Syntax {
                 }
             )
         }
-        if kind == "bool" {
+        "bool" -> {
             arms.append(
                 quote {
                     if tag == #{tag} && wire == #{wire} {
@@ -315,7 +274,7 @@ comptime function ipcDeriveStruct(target: borrow Declaration) -> Syntax {
                 }
             )
         }
-        if kind == "float" {
+        "float" -> {
             arms.append(
                 quote {
                     if tag == #{tag} && wire == #{wire} {
@@ -325,7 +284,7 @@ comptime function ipcDeriveStruct(target: borrow Declaration) -> Syntax {
                 }
             )
         }
-        if kind == "string" {
+        "string" -> {
             arms.append(
                 quote {
                     if tag == #{tag} && wire == #{wire} {
@@ -335,7 +294,7 @@ comptime function ipcDeriveStruct(target: borrow Declaration) -> Syntax {
                 }
             )
         }
-        if kind == "bytes" {
+        "bytes" -> {
             arms.append(
                 quote {
                     if tag == #{tag} && wire == #{wire} {
@@ -345,7 +304,7 @@ comptime function ipcDeriveStruct(target: borrow Declaration) -> Syntax {
                 }
             )
         }
-        if kind == "message" {
+        "message" -> {
             arms.append(
                 quote {
                     if tag == #{tag} && wire == #{wire} {
@@ -357,89 +316,85 @@ comptime function ipcDeriveStruct(target: borrow Declaration) -> Syntax {
                 }
             )
         }
-        if kind == "array" {
+        "array" -> {
             let element: Identifier = source.identifiers()[0]
-            let elementKind: String = ipcScalarKind(element.asString())
+            let elementKind: String = scalarKind(element.asString())
             var take: Syntax = quote {}
-            if elementKind == "int" {
-                take = quote { items_#{name}.append(#{element}(input.takeVarInt())) }
-            }
-            if elementKind == "uint" {
-                take = quote { items_#{name}.append(input.takeVarUInt()) }
-            }
-            if elementKind == "bool" {
-                take = quote { items_#{name}.append(input.takeBool()) }
-            }
-            if elementKind == "float" {
-                take = quote { items_#{name}.append(#{element}(input.takeFloat())) }
-            }
-            if elementKind == "string" {
-                take = quote { items_#{name}.append(input.takeString()) }
-            }
-            if elementKind == "message" {
-                take = quote {
-                    let item_#{name} = input.enterRegion()
-                    items_#{name}.append(decode_#{element}(input))
-                    input.leaveRegion(item_#{name})
-                }
-            }
-            arms.append(
-                quote {
-                    if tag == #{tag} && wire == #{wire} {
-                        let saved_#{name} = input.enterRegion()
-                        let count_#{name} = Int(input.takeVarUInt())
-                        var items_#{name}: #{source} = []
-                        for _ in 0..count_#{name} {
-                            #{take}
-                        }
-                        input.leaveRegion(saved_#{name})
-                        slot_#{name} = items_#{name}
-                        matched = true
-                    }
-                }
-            )
-        }
+            match elementKind {
+                "int" -> take = quote { items_#{name}.append(#{element}(input.takeVarInt())) }
+                "uint" -> take = quote { items_#{name}.append(input.takeVarUInt()) }
+                "bool" -> take = quote { items_#{name}.append(input.takeBool()) }
+                "float" -> take = quote { items_#{name}.append(#{element}(input.takeFloat())) }
+                "string" -> take = quote { items_#{name}.append(input.takeString()) }
+                "message" -> {
+                    take = quote {
+                        let item_#{name} = input.enterRegion()
+                        items_#{name}.append(decode_#{element}(input))
+                        input.leaveRegion(item_#{name})
 
-        fields.append(quote { #{name}: slot_#{name} })
-        tag = tag + 1
+                }
+            }
+            else -> {}
+        }
+        arms.append(
+            quote {
+                if tag == #{tag} && wire == #{wire} {
+                    let saved_#{name} = input.enterRegion()
+                    let count_#{name} = Number(input.takeVarUInt())
+                    var items_#{name}: #{source} = []
+                    for _ in 0..count_#{name} {
+                        #{take}
+                    }
+                    input.leaveRegion(saved_#{name})
+                    slot_#{name} = items_#{name}
+                    matched = true
+                }
+            }
+        )
+    }
+    else -> {}
+}
+
+fields.append(quote { #{name}: slot_#{name} })
+tag++
+}
+
+return quote {
+    function encode_#{target.name}(v: borrow #{target.name}, out: borrow mut IpcWriter) {
+        #{encodes}
     }
 
-    return quote {
-        function encode_#{target.name}(v: borrow #{target.name}, out: borrow mut IpcWriter) {
-            #{encodes}
-        }
-
-        function decode_#{target.name}(input: borrow mut IpcReader) -> #{target.name} {
-            #{locals}
-            while input.atEnd() == false {
-                let key = input.nextKey()
-                if key != 0 {
-                    let tag = ipcKeyTag(key)
-                    let wire = key & 3
-                    var matched = false
-                    #{arms}
-                    // A field this build has no name for. Stepping over it is the
-                    // whole compatibility story: what a newer peer added costs
-                    // one read, and nothing after it is misread.
-                    if matched == false {
-                        input.skip(ipcWireFromCode(wire))
-                    }
+    function decode_#{target.name}(input: borrow mut IpcReader) -> #{target.name} {
+        #{locals}
+        while !input.atEnd() {
+            let key = input.nextKey()
+            if key != 0 {
+                let tag = WireKey.tag(key)
+                let wire = key & 3
+                var matched = false
+                #{arms}
+                // A field this build has no name for. Stepping over it is the
+                // whole compatibility story: what a newer peer added costs
+                // one read, and nothing after it is misread.
+                if !matched {
+                    input.skip(WireKey.shape(wire))
                 }
             }
-            return #{target.name} {
-                #{Syntax.join(fields, ", ")}
-            }
         }
-
-        // The value an empty encoding decodes to: every field at its default.
-        //
-        // Defined this way rather than written out so there is one statement of
-        // what a field's default is, and it is the one the decoder uses.
-        function empty_#{target.name}() -> #{target.name} {
-            var reader = ipcReader([])
-            return decode_#{target.name}(reader)
+        return #{target.name} {
+            #{Syntax.join(fields, ", ")}
         }
     }
+
+    // The value an empty encoding decodes to: every field at its default.
+    //
+    // Defined this way rather than written out so there is one statement of
+    // what a field's default is, and it is the one the decoder uses.
+    function empty_#{target.name}() -> #{target.name} {
+        var reader = frameReader([])
+        return decode_#{target.name}(reader)
+    }
+}
 }
 
 // An enum is its variant's position and, when the variant carries one, its
@@ -456,11 +411,11 @@ comptime function ipcDeriveStruct(target: borrow Declaration) -> Syntax {
 // need; an unknown variant is the value itself, and there is nothing to answer
 // with. It marks the reader failed and answers the first variant, so a caller
 // that checks `ok()` -- which is the one check the frame owes -- sees it.
-comptime function ipcDeriveEnum(target: borrow Declaration) -> Syntax {
+comptime function deriveEnum(target: borrow Declaration) -> Syntax {
     var writes: [Syntax] = []
     var reads: [Syntax] = []
     var fallback: Syntax = quote {}
-    var index: Int = 0
+    var index: Number = 0
     for variant in target.fields {
         let payload: Syntax = variant.type.asSyntax()
         let name = variant.name
@@ -477,142 +432,145 @@ comptime function ipcDeriveEnum(target: borrow Declaration) -> Syntax {
                 fallback = quote { return .#{name} }
             }
         } else {
-            let kind: String = ipcFieldKind(payload)
-            if kind == "unsupported" || kind == "array" || kind == "bytes" {
-                Diagnostics.error(
-                    "Derive(IpcMessage): a variant payload must be a scalar, a String, or another @Derive(IpcMessage) type",
-                    at: target.syntax
-                )
-            }
-            if kind == "int" {
-                writes.append(
-                    quote {
-                        #{name}(payload) -> {
-                            out.putVarUInt(U64(#{index}))
-                            out.putVarInt(Int(payload))
-                        }
-                    }
-                )
-                reads.append(
-                    quote {
-                        if variant == #{index} {
-                            return .#{name}(#{payload}(input.takeVarInt()))
-                        }
-                    }
-                )
-                if index == 0 {
-                    fallback = quote { return .#{name}(0) }
+            let kind: String = fieldKind(payload)
+            match kind {
+                "unsupported", "array", "bytes" -> {
+                    Diagnostics.error(
+                        "Derive(IpcMessage): a variant payload must be a scalar, a String, or another @Derive(IpcMessage) type",
+                        at: target.syntax
+                    )
                 }
-            }
-            if kind == "uint" {
-                writes.append(
-                    quote {
-                        #{name}(payload) -> {
-                            out.putVarUInt(U64(#{index}))
-                            out.putVarUInt(payload)
+                "int" -> {
+                    writes.append(
+                        quote {
+                            #{name}(payload) -> {
+                                out.putVarUInt(U64(#{index}))
+                                out.putVarInt(Int(payload))
+                            }
                         }
-                    }
-                )
-                reads.append(
-                    quote {
-                        if variant == #{index} {
-                            return .#{name}(input.takeVarUInt())
+                    )
+                    reads.append(
+                        quote {
+                            if variant == #{index} {
+                                return .#{name}(#{payload}(input.takeVarInt()))
+                            }
                         }
+                    )
+                    if index == 0 {
+                        fallback = quote { return .#{name}(0) }
                     }
-                )
-                if index == 0 {
-                    fallback = quote { return .#{name}(U64(0)) }
                 }
-            }
-            if kind == "bool" {
-                writes.append(
-                    quote {
-                        #{name}(payload) -> {
-                            out.putVarUInt(U64(#{index}))
-                            out.putBool(payload)
+                "uint" -> {
+                    writes.append(
+                        quote {
+                            #{name}(payload) -> {
+                                out.putVarUInt(U64(#{index}))
+                                out.putVarUInt(payload)
+                            }
                         }
-                    }
-                )
-                reads.append(
-                    quote {
-                        if variant == #{index} {
-                            return .#{name}(input.takeBool())
+                    )
+                    reads.append(
+                        quote {
+                            if variant == #{index} {
+                                return .#{name}(input.takeVarUInt())
+                            }
                         }
+                    )
+                    if index == 0 {
+                        fallback = quote { return .#{name}(U64(0)) }
                     }
-                )
-                if index == 0 {
-                    fallback = quote { return .#{name}(false) }
                 }
-            }
-            if kind == "float" {
-                writes.append(
-                    quote {
-                        #{name}(payload) -> {
-                            out.putVarUInt(U64(#{index}))
-                            out.putFloat(Float(payload))
+                "bool" -> {
+                    writes.append(
+                        quote {
+                            #{name}(payload) -> {
+                                out.putVarUInt(U64(#{index}))
+                                out.putBool(payload)
+                            }
                         }
-                    }
-                )
-                reads.append(
-                    quote {
-                        if variant == #{index} {
-                            return .#{name}(#{payload}(input.takeFloat()))
+                    )
+                    reads.append(
+                        quote {
+                            if variant == #{index} {
+                                return .#{name}(input.takeBool())
+                            }
                         }
+                    )
+                    if index == 0 {
+                        fallback = quote { return .#{name}(false) }
                     }
-                )
-                if index == 0 {
-                    fallback = quote { return .#{name}(0.0) }
                 }
-            }
-            if kind == "string" {
-                writes.append(
-                    quote {
-                        #{name}(payload) -> {
-                            out.putVarUInt(U64(#{index}))
-                            out.putString(payload)
+                "float" -> {
+                    writes.append(
+                        quote {
+                            #{name}(payload) -> {
+                                out.putVarUInt(U64(#{index}))
+                                out.putFloat(Float(payload))
+                            }
                         }
-                    }
-                )
-                reads.append(
-                    quote {
-                        if variant == #{index} {
-                            return .#{name}(input.takeString())
+                    )
+                    reads.append(
+                        quote {
+                            if variant == #{index} {
+                                return .#{name}(#{payload}(input.takeFloat()))
+                            }
                         }
+                    )
+                    if index == 0 {
+                        fallback = quote { return .#{name}(0.0) }
                     }
-                )
-                if index == 0 {
-                    fallback = quote { return .#{name}("") }
                 }
-            }
-            if kind == "message" {
-                writes.append(
-                    quote {
-                        #{name}(payload) -> {
-                            out.putVarUInt(U64(#{index}))
-                            var region = ipcRegion()
-                            encode_#{payload}(payload, region)
-                            out.putBytes(region.bytes)
+                "string" -> {
+                    writes.append(
+                        quote {
+                            #{name}(payload) -> {
+                                out.putVarUInt(U64(#{index}))
+                                out.putString(payload)
+                            }
                         }
-                    }
-                )
-                // Read into a local first: the region has to be entered and left
-                // around the call, and neither fits inside an argument.
-                reads.append(
-                    quote {
-                        if variant == #{index} {
-                            let saved = input.enterRegion()
-                            let carried = decode_#{payload}(input)
-                            input.leaveRegion(saved)
-                            return .#{name}(carried)
+                    )
+                    reads.append(
+                        quote {
+                            if variant == #{index} {
+                                return .#{name}(input.takeString())
+                            }
                         }
+                    )
+                    if index == 0 {
+                        fallback = quote { return .#{name}("") }
                     }
-                )
-                if index == 0 {
-                    fallback = quote { return .#{name}(empty_#{payload}()) }
                 }
+                "message" -> {
+                    writes.append(
+                        quote {
+                            #{name}(payload) -> {
+                                out.putVarUInt(U64(#{index}))
+                                var region = IpcWriter {}
+                                encode_#{payload}(payload, region)
+                                out.putBytes(region.bytes)
+                            }
+                        }
+                    )
+                    // Read into a local first: the region has to be entered and left
+                    // around the call, and neither fits inside an argument.
+                    reads.append(
+                        quote {
+                            if variant == #{index} {
+                                let saved = input.enterRegion()
+                                let carried = decode_#{payload}(input)
+                                input.leaveRegion(saved)
+                                return .#{name}(carried)
+                            }
+                        }
+                    )
+                    if index == 0 {
+                        fallback = quote { return .#{name}(empty_#{payload}()) }
+                    }
+                }
+                else -> {}
             }
         }
-        index = index + 1
+        index++
     }
 
     return quote {
@@ -623,14 +581,14 @@ comptime function ipcDeriveEnum(target: borrow Declaration) -> Syntax {
         }
 
         function decode_#{target.name}(input: borrow mut IpcReader) -> #{target.name} {
-            let variant = Int(input.takeVarUInt())
+            let variant = Number(input.takeVarUInt())
             #{reads}
             input.fail()
             #{fallback}
         }
 
         function empty_#{target.name}() -> #{target.name} {
-            var reader = ipcReader([])
+            var reader = frameReader([])
             return decode_#{target.name}(reader)
         }
     }
