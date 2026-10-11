@@ -117,7 +117,7 @@ struct IpcChannel {
         if length <= 0 {
             return IpcFrame { bytes: move frame, handle: 0 }
         }
-        for at in 0.. (length + 7) / 8 {
+        for at in 0..trunc((length + 7) / 8) {
             // One call per eight bytes. The word is little-endian, and the tail
             // word of a frame whose length is not a multiple of eight carries
             // zeros above the bytes that are really there -- which the loop
