@@ -182,7 +182,6 @@ struct IpcPort {
 
     function close() {
         channel.close()
-        return
     }
 }
 

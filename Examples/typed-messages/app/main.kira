@@ -137,5 +137,4 @@ function entry() {
     // from a peer that knows none of these fields decodes to.
     let nothing = empty_TabSummary()
     print("empty title: [" + nothing.title + "]")
-    return
 }

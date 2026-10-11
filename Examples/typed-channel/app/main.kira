@@ -7,6 +7,10 @@ import KiraIpc
 // typed answer comes back the other. Between two processes nothing about this
 // changes but which half each one runs.
 
+namespace ServiceName {
+    let browser: String = "harmony.browser"
+}
+
 @Derive(IpcMessage)
 struct OpenTab {
     var address: String
@@ -17,10 +21,6 @@ struct OpenTab {
 struct TabOpened {
     var id: Int
     var address: String
-}
-
-function browserService() -> String {
-    return "harmony.browser"
 }
 
 // The service half: read a request, answer it.
@@ -36,7 +36,7 @@ function serveOnce(port: borrow mut IpcPort) -> Bool {
         // A frame that could not be believed. The peer is told so and the
         // service stays up: a caller that can send nonsense must not be able to
         // take the service down with it.
-        let ignored = port.fault(delivery.envelope.call, browserService(), delivery.envelope.method, [])
+        let ignored = port.fault(delivery.envelope.call, ServiceName.browser, delivery.envelope.method, [])
         return true
     }
     var reader = ipcPayloadReader(delivery.envelope)
@@ -45,7 +45,7 @@ function serveOnce(port: borrow mut IpcPort) -> Bool {
 
     var answer = IpcWriter {}
     encode_TabOpened(TabOpened { id: 41, address: asked.address }, answer)
-    let sent = port.respond(delivery.envelope.call, browserService(), "tabs.open", answer.bytes)
+    let sent = port.respond(delivery.envelope.call, ServiceName.browser, "tabs.open", answer.bytes)
     print("service answered: " + String(sent))
     return true
 }
@@ -63,7 +63,7 @@ function entry() {
 
     var request = IpcWriter {}
     encode_OpenTab(OpenTab { address: "https://example.com", foreground: true }, request)
-    let call = caller.request(browserService(), "tabs.open", request.bytes)
+    let call = caller.request(ServiceName.browser, "tabs.open", request.bytes)
     print("call: " + String(call))
 
     // Pumped rather than waited on. A socket hands a frame over when it is
@@ -94,5 +94,4 @@ function entry() {
     caller.close()
     service.close()
     endpoint.close()
-    return
 }

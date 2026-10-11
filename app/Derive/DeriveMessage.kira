@@ -407,7 +407,6 @@ comptime function ipcDeriveStruct(target: borrow Declaration) -> Syntax {
     return quote {
         function encode_#{target.name}(v: borrow #{target.name}, out: borrow mut IpcWriter) {
             #{encodes}
-            return
         }
 
         function decode_#{target.name}(input: borrow mut IpcReader) -> #{target.name} {
@@ -621,7 +620,6 @@ comptime function ipcDeriveEnum(target: borrow Declaration) -> Syntax {
             match v {
                 #{writes}
             }
-            return
         }
 
         function decode_#{target.name}(input: borrow mut IpcReader) -> #{target.name} {

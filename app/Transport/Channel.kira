@@ -48,7 +48,6 @@ struct IpcEndpoint {
         if id > 0 {
             kira_ipc_close(I32(id))
         }
-        return
     }
 }
 
@@ -142,7 +141,6 @@ struct IpcChannel {
         if id > 0 {
             kira_ipc_close(I32(id))
         }
-        return
     }
 }
 

@@ -45,7 +45,6 @@ struct IpcReader {
         // Reading stops where it went wrong rather than running on through
         // bytes whose meaning is already lost.
         self.cursor = self.limit
-        return
     }
 
     // --- Primitives ---------------------------------------------------------
@@ -166,7 +165,6 @@ struct IpcReader {
     function leaveRegion(borrow mut self, previous: Int) {
         self.cursor = self.limit
         self.limit = previous
-        return
     }
 
     // --- Fields -------------------------------------------------------------
@@ -203,7 +201,6 @@ struct IpcReader {
                 self.cursor = self.cursor + count
             }
         }
-        return
     }
 }
 

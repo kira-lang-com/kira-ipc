@@ -20,7 +20,6 @@ struct IpcWriter {
 
     function putByte(borrow mut self, value: Int) {
         self.bytes.append(U8(value & 255))
-        return
     }
 
     // LEB128: seven bits at a time, low group first, the high bit set on every
@@ -36,7 +35,6 @@ struct IpcWriter {
             rest = rest >> 7
         }
         putByte(Int(rest))
-        return
     }
 
     // Zigzag, so a small negative number costs one byte rather than ten.
@@ -52,7 +50,6 @@ struct IpcWriter {
         // `-(value + 1)` rather than `-value`, which has no positive twin at the
         // bottom of the range.
         putVarUInt(U64(0 - (value + 1)) * U64(2) + U64(1))
-        return
     }
 
     function putFixed(borrow mut self, bits: U64) {
@@ -63,7 +60,6 @@ struct IpcWriter {
             rest = rest >> 8
             step = step + 1
         }
-        return
     }
 
     function putRaw(borrow mut self, source: borrow [U8]) {
@@ -72,7 +68,6 @@ struct IpcWriter {
             self.bytes.append(source[index])
             index = index + 1
         }
-        return
     }
 
     function putBool(borrow mut self, value: Bool) {
@@ -81,14 +76,12 @@ struct IpcWriter {
             return
         }
         putVarUInt(U64(0))
-        return
     }
 
     // Bit-exact, because a wire format that wrote a Float as decimal text would
     // lose the low bits of every value it carried.
     function putFloat(borrow mut self, value: Float) {
         putFixed(kira_ipc_f64_bits(value))
-        return
     }
 
     // A String is its UTF-8 bytes, length-prefixed. There is no escaping and
@@ -101,18 +94,15 @@ struct IpcWriter {
             putByte(value.charAt(index))
             index = index + 1
         }
-        return
     }
 
     function putBytes(borrow mut self, value: borrow [U8]) {
         putVarUInt(U64(value.count))
         putRaw(value)
-        return
     }
 
     function putKey(borrow mut self, tag: Int, wire: borrow IpcWire) {
         putVarUInt(U64(ipcKey(tag, wire)))
-        return
     }
 
     // --- Fields -------------------------------------------------------------
@@ -123,38 +113,32 @@ struct IpcWriter {
     function intField(borrow mut self, tag: Int, value: Int) {
         putKey(tag, IpcWire.Var)
         putVarInt(value)
-        return
     }
 
     // An unsigned field, whose values run past what an Int can carry.
     function uintField(borrow mut self, tag: Int, value: U64) {
         putKey(tag, IpcWire.Var)
         putVarUInt(value)
-        return
     }
 
     function boolField(borrow mut self, tag: Int, value: Bool) {
         putKey(tag, IpcWire.Var)
         putBool(value)
-        return
     }
 
     function floatField(borrow mut self, tag: Int, value: Float) {
         putKey(tag, IpcWire.Fixed)
         putFloat(value)
-        return
     }
 
     function stringField(borrow mut self, tag: Int, value: borrow String) {
         putKey(tag, IpcWire.Len)
         putString(value)
-        return
     }
 
     function bytesField(borrow mut self, tag: Int, value: borrow [U8]) {
         putKey(tag, IpcWire.Len)
         putBytes(value)
-        return
     }
 
     // A region built elsewhere, placed under this tag: a nested message, an
@@ -164,7 +148,6 @@ struct IpcWriter {
         putKey(tag, IpcWire.Len)
         putVarUInt(U64(region.count))
         putRaw(region)
-        return
     }
 }
 
