@@ -196,6 +196,7 @@ comptime function deriveStruct(target: borrow Declaration) -> Syntax {
                             encode_#{element}(v.#{name} [index_#{name}], item_#{name})
                             region_#{name}.putBytes(item_#{name}.bytes)
 
+
                     }
                 }
                 "bytes", "array", "unsupported" -> {
@@ -332,6 +333,7 @@ comptime function deriveStruct(target: borrow Declaration) -> Syntax {
                         items_#{name}.append(decode_#{element}(input))
                         input.leaveRegion(item_#{name})
 
+
                 }
             }
             else -> {}
@@ -423,9 +425,7 @@ comptime function deriveEnum(target: borrow Declaration) -> Syntax {
             writes.append(quote { #{name} -> out.putVarUInt(U64(#{index})) })
             reads.append(
                 quote {
-                    if variant == #{index} {
-                        return .#{name}
-                    }
+                    #{index} -> return .#{name}
                 }
             )
             if index == 0 {
@@ -451,9 +451,7 @@ comptime function deriveEnum(target: borrow Declaration) -> Syntax {
                     )
                     reads.append(
                         quote {
-                            if variant == #{index} {
-                                return .#{name}(#{payload}(input.takeVarInt()))
-                            }
+                            #{index} -> return .#{name}(#{payload}(input.takeVarInt()))
                         }
                     )
                     if index == 0 {
@@ -471,9 +469,7 @@ comptime function deriveEnum(target: borrow Declaration) -> Syntax {
                     )
                     reads.append(
                         quote {
-                            if variant == #{index} {
-                                return .#{name}(input.takeVarUInt())
-                            }
+                            #{index} -> return .#{name}(input.takeVarUInt())
                         }
                     )
                     if index == 0 {
@@ -491,9 +487,7 @@ comptime function deriveEnum(target: borrow Declaration) -> Syntax {
                     )
                     reads.append(
                         quote {
-                            if variant == #{index} {
-                                return .#{name}(input.takeBool())
-                            }
+                            #{index} -> return .#{name}(input.takeBool())
                         }
                     )
                     if index == 0 {
@@ -511,9 +505,7 @@ comptime function deriveEnum(target: borrow Declaration) -> Syntax {
                     )
                     reads.append(
                         quote {
-                            if variant == #{index} {
-                                return .#{name}(#{payload}(input.takeFloat()))
-                            }
+                            #{index} -> return .#{name}(#{payload}(input.takeFloat()))
                         }
                     )
                     if index == 0 {
@@ -531,9 +523,7 @@ comptime function deriveEnum(target: borrow Declaration) -> Syntax {
                     )
                     reads.append(
                         quote {
-                            if variant == #{index} {
-                                return .#{name}(input.takeString())
-                            }
+                            #{index} -> return .#{name}(input.takeString())
                         }
                     )
                     if index == 0 {
@@ -581,10 +571,13 @@ comptime function deriveEnum(target: borrow Declaration) -> Syntax {
         }
 
         function decode_#{target.name}(input: borrow mut IpcReader) -> #{target.name} {
-            let variant = Number(input.takeVarUInt())
-            #{reads}
-            input.fail()
-            #{fallback}
+            match Number(input.takeVarUInt()) {
+                #{reads}
+                else -> {
+                    input.fail()
+                    #{fallback}
+                }
+            }
         }
 
         function empty_#{target.name}() -> #{target.name} {
