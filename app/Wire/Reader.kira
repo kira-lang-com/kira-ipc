@@ -1,3 +1,5 @@
+import Foundation
+
 // Reading KIP/1.
 //
 // The reader's one rule is that it NEVER TRAPS. Foundation's `deserialize_*`
@@ -38,7 +40,7 @@ struct IpcReader {
         return cursor >= limit
     }
 
-    function fail() {
+    function fail(borrow mut self) {
         self.failed = true
         // Reading stops where it went wrong rather than running on through
         // bytes whose meaning is already lost.
@@ -48,7 +50,7 @@ struct IpcReader {
 
     // --- Primitives ---------------------------------------------------------
 
-    function takeByte() -> Int {
+    function takeByte(borrow mut self) -> Int {
         if cursor >= limit {
             fail()
             return 0
@@ -61,27 +63,23 @@ struct IpcReader {
     // LEB128, refusing a group count that could not have come from a 64-bit
     // value: ten groups is the most an unsigned 64-bit varint takes, and a
     // stream of set high bits is otherwise a loop bounded only by the frame.
-    function takeVarUInt() -> U64 {
+    function takeVarUInt(borrow mut self) -> U64 {
         var result = U64(0)
-        var shift = 0
-        var groups = 0
-        while groups < 10 {
+        for group in 0..10 {
             let byte = takeByte()
             if failed {
                 return U64(0)
             }
-            result = result | (U64(byte & 127) << shift)
+            result = result | (U64(byte & 127) << (group * 7))
             if byte < 128 {
                 return result
             }
-            shift = shift + 7
-            groups = groups + 1
         }
         fail()
         return U64(0)
     }
 
-    function takeVarInt() -> Int {
+    function takeVarInt(borrow mut self) -> Int {
         let raw = takeVarUInt()
         if (raw & U64(1)) == U64(0) {
             return Int(raw >> 1)
@@ -89,25 +87,23 @@ struct IpcReader {
         return 0 - Int(raw >> 1) - 1
     }
 
-    function takeFixed() -> U64 {
+    function takeFixed(borrow mut self) -> U64 {
         var result = U64(0)
-        var step = 0
-        while step < 8 {
+        for step in 0..8 {
             let byte = takeByte()
             if failed {
                 return U64(0)
             }
             result = result | (U64(byte) << (step * 8))
-            step = step + 1
         }
         return result
     }
 
-    function takeBool() -> Bool {
+    function takeBool(borrow mut self) -> Bool {
         return takeVarUInt() != U64(0)
     }
 
-    function takeFloat() -> Float {
+    function takeFloat(borrow mut self) -> Float {
         return kira_ipc_f64_from_bits(takeFixed())
     }
 
@@ -115,7 +111,7 @@ struct IpcReader {
     // left. A length naming more bytes than the reader holds is the commonest
     // shape of a corrupt or truncated frame, and catching it here is what keeps
     // every reader below this one inside its parent.
-    function takeLength() -> Int {
+    function takeLength(borrow mut self) -> Int {
         let declared = takeVarUInt()
         if failed {
             return 0
@@ -129,19 +125,17 @@ struct IpcReader {
         return Int(declared)
     }
 
-    function takeBytes() -> [U8] {
+    function takeBytes(borrow mut self) -> [U8] {
         let count = takeLength()
         var out: [U8] = []
-        var index = 0
-        while index < count {
+        for index in 0..count {
             out.append(bytes[cursor + index])
-            index = index + 1
         }
         self.cursor = self.cursor + count
         return out
     }
 
-    function takeString() -> String {
+    function takeString(borrow mut self) -> String {
         let raw = takeBytes()
         if raw.count == 0 {
             return ""
@@ -159,7 +153,7 @@ struct IpcReader {
 
     // Lower the limit to the end of the region about to be read, and answer the
     // limit that was in force so `leaveRegion` can restore it.
-    function enterRegion() -> Int {
+    function enterRegion(borrow mut self) -> Int {
         let count = takeLength()
         let previous = limit
         self.limit = self.cursor + count
@@ -169,7 +163,7 @@ struct IpcReader {
     // Put the limit back and step over whatever the region's reader did not
     // consume. A message carrying fields this build does not know reaches here
     // with bytes to spare, and skipping them is exactly how it stays readable.
-    function leaveRegion(previous: Int) {
+    function leaveRegion(borrow mut self, previous: Int) {
         self.cursor = self.limit
         self.limit = previous
         return
@@ -179,7 +173,7 @@ struct IpcReader {
 
     // The next field's key, or 0 at the end of the region. Zero is not a legal
     // key -- tags are one-based -- so it cannot be confused with a field.
-    function nextKey() -> Int {
+    function nextKey(borrow mut self) -> Int {
         if atEnd() {
             return 0
         }
@@ -196,7 +190,7 @@ struct IpcReader {
     // copy of a message writes fields this one never heard of, and they cost one
     // read each to walk past. Nothing is lost that this build could have used,
     // and nothing after them is misread.
-    function skip(wire: borrow IpcWire) {
+    function skip(borrow mut self, wire: borrow IpcWire) {
         match wire {
             Var -> {
                 let ignored = takeVarUInt()
@@ -216,10 +210,5 @@ struct IpcReader {
 // A reader over a whole frame.
 function ipcReader(bytes: [U8]) -> IpcReader {
     let count = bytes.count
-    return IpcReader {
-        bytes: move bytes,
-        cursor: 0,
-        limit: count,
-        failed: false
-    }
+    return IpcReader { bytes: move bytes, cursor: 0, limit: count, failed: false }
 }

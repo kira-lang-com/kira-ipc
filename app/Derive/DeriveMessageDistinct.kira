@@ -1,3 +1,5 @@
+import Foundation
+
 // `@Derive(IpcMessage)` for a `distinct` type.
 //
 // Beside DeriveMessage.kira rather than inside it, on the file-size ladder.
@@ -18,10 +20,10 @@
 // varint at the top level has nowhere to put a second field, so a message type
 // that later grows one would have to change shape; a region can be appended to
 // in both directions, which is the same reason every other message is one.
-comptime function ipcDeriveDistinct(target: Declaration) -> Syntax {
-    var body: Syntax = quote { }
+comptime function ipcDeriveDistinct(target: borrow Declaration) -> Syntax {
+    var body: Syntax = quote {}
     for field in target.fields {
-        let kind: String = ipcScalarKind(field.type.asSyntax())
+        let kind: String = ipcFieldKind(field.type.asSyntax())
         if kind == "message" || kind == "string" {
             Diagnostics.error(
                 "Derive(IpcMessage): a distinct type crosses as the scalar it is, so its representation must be an integer width, U64, Bool, or a float — RawPtr names an address that means nothing in another process",
@@ -34,7 +36,10 @@ comptime function ipcDeriveDistinct(target: Declaration) -> Syntax {
         // call. The struct path above carries the same rule.
         if kind == "int" {
             body = quote {
-                function encode_#{target.name}(v: borrow #{target.name}, out: borrow mut IpcWriter) {
+                function encode_#{target.name}(
+                    v: borrow #{target.name},
+                    out: borrow mut IpcWriter
+                ) {
                     out.intField(1, Int(v.raw))
                     return
                 }
@@ -67,7 +72,10 @@ comptime function ipcDeriveDistinct(target: Declaration) -> Syntax {
         }
         if kind == "uint" {
             body = quote {
-                function encode_#{target.name}(v: borrow #{target.name}, out: borrow mut IpcWriter) {
+                function encode_#{target.name}(
+                    v: borrow #{target.name},
+                    out: borrow mut IpcWriter
+                ) {
                     out.uintField(1, v.raw)
                     return
                 }
@@ -100,7 +108,10 @@ comptime function ipcDeriveDistinct(target: Declaration) -> Syntax {
         }
         if kind == "bool" {
             body = quote {
-                function encode_#{target.name}(v: borrow #{target.name}, out: borrow mut IpcWriter) {
+                function encode_#{target.name}(
+                    v: borrow #{target.name},
+                    out: borrow mut IpcWriter
+                ) {
                     out.boolField(1, v.raw)
                     return
                 }
@@ -133,7 +144,10 @@ comptime function ipcDeriveDistinct(target: Declaration) -> Syntax {
         }
         if kind == "float" {
             body = quote {
-                function encode_#{target.name}(v: borrow #{target.name}, out: borrow mut IpcWriter) {
+                function encode_#{target.name}(
+                    v: borrow #{target.name},
+                    out: borrow mut IpcWriter
+                ) {
                     out.floatField(1, Float(v.raw))
                     return
                 }
@@ -167,4 +181,3 @@ comptime function ipcDeriveDistinct(target: Declaration) -> Syntax {
     }
     return body
 }
-

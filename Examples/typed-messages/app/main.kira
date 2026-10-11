@@ -83,10 +83,8 @@ function entry() {
     // A frame that stops halfway is the shape a crashed peer leaves behind. It
     // must produce a value and a false `ok()`, never a stopped process.
     var truncated: [U8] = []
-    var index = 0
-    while index < out.bytes.count / 2 {
+    for index in 0..out.bytes.count / 2 {
         truncated.append(out.bytes[index])
-        index = index + 1
     }
     var short = ipcReader(move truncated)
     let partial = decode_TabSummary(short)

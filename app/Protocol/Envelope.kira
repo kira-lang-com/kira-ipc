@@ -1,3 +1,5 @@
+import Foundation
+
 // What every frame carries around its payload.
 //
 // The envelope is itself a `@Derive(IpcMessage)`, which is deliberate: the one
@@ -38,7 +40,7 @@ struct IpcEnvelope {
     var kind: IpcKind
     // Ties a response to its request. Zero on an event, because nothing is
     // waiting for one.
-    var call: Int
+    var call: Number
     // The message itself, encoded by its own generated encoder. The transport
     // never looks inside: only the two ends know what a method's payload is, and
     // that is what lets a method's shape change without the envelope changing.
@@ -64,10 +66,7 @@ struct IpcArrival {
 function ipcArrival(bytes: [U8]) -> IpcArrival {
     var reader = ipcReader(move bytes)
     let envelope = decode_IpcEnvelope(reader)
-    return IpcArrival {
-        envelope: move envelope,
-        sound: reader.ok()
-    }
+    return IpcArrival { envelope: move envelope, sound: reader.ok() }
 }
 
 // A reader over a delivered payload, for the generated decoder of whatever the

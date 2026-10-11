@@ -1,3 +1,5 @@
+import Foundation
+
 // The channel, as Kira sees it.
 //
 // Everything below is a thin reading of `NativeLibs/kira_ipc.h`: an id, the
@@ -116,20 +118,20 @@ struct IpcChannel {
         if length <= 0 {
             return IpcFrame { bytes: move frame, handle: 0 }
         }
-        var index = 0
-        while index < length {
+        for at in 0.. (length + 7) / 8 {
             // One call per eight bytes. The word is little-endian, and the tail
             // word of a frame whose length is not a multiple of eight carries
             // zeros above the bytes that are really there -- which the loop
             // never reads, because it stops at the length.
-            var word = kira_ipc_frame_word(I32(id), I32(index / 8))
-            var step = 0
-            while step < 8 && index + step < length {
+            var word = kira_ipc_frame_word(I32(id), I32(at))
+            var present = length - at * 8
+            if present > 8 {
+                present = 8
+            }
+            for _ in 0..present {
                 frame.append(U8(Int(word & U64(255))))
                 word = word >> 8
-                step = step + 1
             }
-            index = index + 8
         }
         let handle = kira_ipc_frame_handle(I32(id))
         kira_ipc_frame_release(I32(id))
