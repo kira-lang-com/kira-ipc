@@ -196,207 +196,207 @@ comptime function deriveStruct(target: borrow Declaration) -> Syntax {
                             encode_#{element}(v.#{name} [index_#{name}], item_#{name})
                             region_#{name}.putBytes(item_#{name}.bytes)
 
-
+                        }
                     }
+                    "bytes", "array", "unsupported" -> {
+                        Diagnostics.error(
+                            "Derive(IpcMessage): an array's elements must be a scalar, a String, or another @Derive(IpcMessage) type — an array of arrays or of [U8] has no encoding",
+                            at: target.syntax
+                        )
+                    }
+                    else -> {}
                 }
-                "bytes", "array", "unsupported" -> {
-                    Diagnostics.error(
-                        "Derive(IpcMessage): an array's elements must be a scalar, a String, or another @Derive(IpcMessage) type — an array of arrays or of [U8] has no encoding",
-                        at: target.syntax
-                    )
-                }
+                // The count leads the region so a decoder can size its array once
+                // rather than growing it per element.
+                encodes.append(
+                    quote {
+                        var region_#{name} = IpcWriter {}
+                        region_#{name}.putVarUInt(U64(v.#{name}.count))
+                        for index_#{name} in 0..v.#{name}.count {
+                            #{put}
+                        }
+                        out.regionField(#{tag}, region_#{name}.bytes)
+                    }
+                )
+            }
+            else -> {}
+        }
+
+        // --- the local the decoder accumulates into -------------------------
+        //
+        // Seeded with the field's own default when it declared one, and with the
+        // type's zero otherwise. A field the peer did not send keeps whatever it
+        // is seeded with, which is the whole of what makes an appended field
+        // safe to meet.
+        if field.initializer == "" {
+            match kind {
+                "int", "uint" -> locals.append(quote { var slot_#{name}: #{source} = 0 })
+                "bool" -> locals.append(quote { var slot_#{name}: #{source} = false })
+                "float" -> locals.append(quote { var slot_#{name}: #{source} = 0.0 })
+                "string" -> locals.append(quote { var slot_#{name}: #{source} = "" })
+                "bytes", "array" -> locals.append(quote { var slot_#{name}: #{source} = [] })
+                "message" -> locals.append(
+                    quote { var slot_#{name}: #{source} = empty_#{source}() }
+                )
                 else -> {}
             }
-            // The count leads the region so a decoder can size its array once
-            // rather than growing it per element.
-            encodes.append(
-                quote {
-                    var region_#{name} = IpcWriter {}
-                    region_#{name}.putVarUInt(U64(v.#{name}.count))
-                    for index_#{name} in 0..v.#{name}.count {
-                        #{put}
-                    }
-                    out.regionField(#{tag}, region_#{name}.bytes)
-                }
-            )
+        } else {
+            locals.append(quote { var slot_#{name}: #{source} = #{field.initializer} })
         }
-        else -> {}
-    }
 
-    // --- the local the decoder accumulates into -------------------------
-    //
-    // Seeded with the field's own default when it declared one, and with the
-    // type's zero otherwise. A field the peer did not send keeps whatever it
-    // is seeded with, which is the whole of what makes an appended field
-    // safe to meet.
-    if field.initializer == "" {
+        // --- the arm that reads it ------------------------------------------
         match kind {
-            "int", "uint" -> locals.append(quote { var slot_#{name}: #{source} = 0 })
-            "bool" -> locals.append(quote { var slot_#{name}: #{source} = false })
-            "float" -> locals.append(quote { var slot_#{name}: #{source} = 0.0 })
-            "string" -> locals.append(quote { var slot_#{name}: #{source} = "" })
-            "bytes", "array" -> locals.append(quote { var slot_#{name}: #{source} = [] })
-            "message" -> locals.append(quote { var slot_#{name}: #{source} = empty_#{source}() })
-            else -> {}
-        }
-    } else {
-        locals.append(quote { var slot_#{name}: #{source} = #{field.initializer} })
-    }
+            "int" -> {
+                arms.append(
+                    quote {
+                        if tag == #{tag} && wire == #{wire} {
+                            slot_#{name} = #{source}(input.takeVarInt())
+                            matched = true
+                        }
+                    }
+                )
+            }
+            "uint" -> {
+                arms.append(
+                    quote {
+                        if tag == #{tag} && wire == #{wire} {
+                            slot_#{name} = input.takeVarUInt()
+                            matched = true
+                        }
+                    }
+                )
+            }
+            "bool" -> {
+                arms.append(
+                    quote {
+                        if tag == #{tag} && wire == #{wire} {
+                            slot_#{name} = input.takeBool()
+                            matched = true
+                        }
+                    }
+                )
+            }
+            "float" -> {
+                arms.append(
+                    quote {
+                        if tag == #{tag} && wire == #{wire} {
+                            slot_#{name} = #{source}(input.takeFloat())
+                            matched = true
+                        }
+                    }
+                )
+            }
+            "string" -> {
+                arms.append(
+                    quote {
+                        if tag == #{tag} && wire == #{wire} {
+                            slot_#{name} = input.takeString()
+                            matched = true
+                        }
+                    }
+                )
+            }
+            "bytes" -> {
+                arms.append(
+                    quote {
+                        if tag == #{tag} && wire == #{wire} {
+                            slot_#{name} = input.takeBytes()
+                            matched = true
+                        }
+                    }
+                )
+            }
+            "message" -> {
+                arms.append(
+                    quote {
+                        if tag == #{tag} && wire == #{wire} {
+                            let saved_#{name} = input.enterRegion()
+                            slot_#{name} = decode_#{source}(input)
+                            input.leaveRegion(saved_#{name})
+                            matched = true
+                        }
+                    }
+                )
+            }
+            "array" -> {
+                let element: Identifier = source.identifiers()[0]
+                let elementKind: String = scalarKind(element.asString())
+                var take: Syntax = quote {}
+                match elementKind {
+                    "int" -> take = quote { items_#{name}.append(#{element}(input.takeVarInt())) }
+                    "uint" -> take = quote { items_#{name}.append(input.takeVarUInt()) }
+                    "bool" -> take = quote { items_#{name}.append(input.takeBool()) }
+                    "float" -> take = quote { items_#{name}.append(#{element}(input.takeFloat())) }
+                    "string" -> take = quote { items_#{name}.append(input.takeString()) }
+                    "message" -> {
+                        take = quote {
+                            let item_#{name} = input.enterRegion()
+                            items_#{name}.append(decode_#{element}(input))
+                            input.leaveRegion(item_#{name})
 
-    // --- the arm that reads it ------------------------------------------
-    match kind {
-        "int" -> {
-            arms.append(
-                quote {
-                    if tag == #{tag} && wire == #{wire} {
-                        slot_#{name} = #{source}(input.takeVarInt())
-                        matched = true
+                        }
                     }
+                    else -> {}
                 }
-            )
-        }
-        "uint" -> {
-            arms.append(
-                quote {
-                    if tag == #{tag} && wire == #{wire} {
-                        slot_#{name} = input.takeVarUInt()
-                        matched = true
+                arms.append(
+                    quote {
+                        if tag == #{tag} && wire == #{wire} {
+                            let saved_#{name} = input.enterRegion()
+                            let count_#{name} = Number(input.takeVarUInt())
+                            var items_#{name}: #{source} = []
+                            for _ in 0..count_#{name} {
+                                #{take}
+                            }
+                            input.leaveRegion(saved_#{name})
+                            slot_#{name} = items_#{name}
+                            matched = true
+                        }
                     }
-                }
-            )
-        }
-        "bool" -> {
-            arms.append(
-                quote {
-                    if tag == #{tag} && wire == #{wire} {
-                        slot_#{name} = input.takeBool()
-                        matched = true
-                    }
-                }
-            )
-        }
-        "float" -> {
-            arms.append(
-                quote {
-                    if tag == #{tag} && wire == #{wire} {
-                        slot_#{name} = #{source}(input.takeFloat())
-                        matched = true
-                    }
-                }
-            )
-        }
-        "string" -> {
-            arms.append(
-                quote {
-                    if tag == #{tag} && wire == #{wire} {
-                        slot_#{name} = input.takeString()
-                        matched = true
-                    }
-                }
-            )
-        }
-        "bytes" -> {
-            arms.append(
-                quote {
-                    if tag == #{tag} && wire == #{wire} {
-                        slot_#{name} = input.takeBytes()
-                        matched = true
-                    }
-                }
-            )
-        }
-        "message" -> {
-            arms.append(
-                quote {
-                    if tag == #{tag} && wire == #{wire} {
-                        let saved_#{name} = input.enterRegion()
-                        slot_#{name} = decode_#{source}(input)
-                        input.leaveRegion(saved_#{name})
-                        matched = true
-                    }
-                }
-            )
-        }
-        "array" -> {
-            let element: Identifier = source.identifiers()[0]
-            let elementKind: String = scalarKind(element.asString())
-            var take: Syntax = quote {}
-            match elementKind {
-                "int" -> take = quote { items_#{name}.append(#{element}(input.takeVarInt())) }
-                "uint" -> take = quote { items_#{name}.append(input.takeVarUInt()) }
-                "bool" -> take = quote { items_#{name}.append(input.takeBool()) }
-                "float" -> take = quote { items_#{name}.append(#{element}(input.takeFloat())) }
-                "string" -> take = quote { items_#{name}.append(input.takeString()) }
-                "message" -> {
-                    take = quote {
-                        let item_#{name} = input.enterRegion()
-                        items_#{name}.append(decode_#{element}(input))
-                        input.leaveRegion(item_#{name})
-
-
-                }
+                )
             }
             else -> {}
         }
-        arms.append(
-            quote {
-                if tag == #{tag} && wire == #{wire} {
-                    let saved_#{name} = input.enterRegion()
-                    let count_#{name} = Number(input.takeVarUInt())
-                    var items_#{name}: #{source} = []
-                    for _ in 0..count_#{name} {
-                        #{take}
+
+        fields.append(quote { #{name}: slot_#{name} })
+        tag++
+    }
+
+    return quote {
+        function encode_#{target.name}(v: borrow #{target.name}, out: borrow mut IpcWriter) {
+            #{encodes}
+        }
+
+        function decode_#{target.name}(input: borrow mut IpcReader) -> #{target.name} {
+            #{locals}
+            while !input.atEnd() {
+                let key = input.nextKey()
+                if key != 0 {
+                    let tag = WireKey.tag(key)
+                    let wire = key & 3
+                    var matched = false
+                    #{arms}
+                    // A field this build has no name for. Stepping over it is the
+                    // whole compatibility story: what a newer peer added costs
+                    // one read, and nothing after it is misread.
+                    if !matched {
+                        input.skip(WireKey.shape(wire))
                     }
-                    input.leaveRegion(saved_#{name})
-                    slot_#{name} = items_#{name}
-                    matched = true
                 }
             }
-        )
-    }
-    else -> {}
-}
-
-fields.append(quote { #{name}: slot_#{name} })
-tag++
-}
-
-return quote {
-    function encode_#{target.name}(v: borrow #{target.name}, out: borrow mut IpcWriter) {
-        #{encodes}
-    }
-
-    function decode_#{target.name}(input: borrow mut IpcReader) -> #{target.name} {
-        #{locals}
-        while !input.atEnd() {
-            let key = input.nextKey()
-            if key != 0 {
-                let tag = WireKey.tag(key)
-                let wire = key & 3
-                var matched = false
-                #{arms}
-                // A field this build has no name for. Stepping over it is the
-                // whole compatibility story: what a newer peer added costs
-                // one read, and nothing after it is misread.
-                if !matched {
-                    input.skip(WireKey.shape(wire))
-                }
+            return #{target.name} {
+                #{Syntax.join(fields, ", ")}
             }
         }
-        return #{target.name} {
-            #{Syntax.join(fields, ", ")}
+
+        // The value an empty encoding decodes to: every field at its default.
+        //
+        // Defined this way rather than written out so there is one statement of
+        // what a field's default is, and it is the one the decoder uses.
+        function empty_#{target.name}() -> #{target.name} {
+            var reader = frameReader([])
+            return decode_#{target.name}(reader)
         }
     }
-
-    // The value an empty encoding decodes to: every field at its default.
-    //
-    // Defined this way rather than written out so there is one statement of
-    // what a field's default is, and it is the one the decoder uses.
-    function empty_#{target.name}() -> #{target.name} {
-        var reader = frameReader([])
-        return decode_#{target.name}(reader)
-    }
-}
 }
 
 // An enum is its variant's position and, when the variant carries one, its

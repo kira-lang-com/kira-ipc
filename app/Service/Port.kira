@@ -172,12 +172,9 @@ struct IpcPort {
         if frame.bytes.count == 0 {
             return IpcDelivery {}
         }
-        let arrival = arrival(frame.bytes)
-        var kind = IpcDeliveryKind.Unreadable
-        if arrival.sound {
-            kind = IpcDeliveryKind.Sound
-        }
-        return IpcDelivery { kind: move kind, envelope: arrival.envelope, handle: frame.handle }
+        let (envelope, sound) = arrival(frame.bytes)
+        let kind: IpcDeliveryKind = sound ? .Sound : .Unreadable
+        return IpcDelivery { kind: move kind, envelope: move envelope, handle: frame.handle }
     }
 
     function close() {

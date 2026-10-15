@@ -69,112 +69,118 @@ comptime function deriveDistinct(target: borrow Declaration) -> Syntax {
                         return decode_#{target.name}(reader)
                     }
 
-            }
-        }
-        "uint" -> {
-            body = quote {
-                function encode_#{target.name}(
-                    v: borrow #{target.name},
-                    out: borrow mut IpcWriter
-                ) {
-                    out.uintField(1, v.raw)
                 }
+            }
+            "uint" -> {
+                body = quote {
+                    function encode_#{target.name}(
+                        v: borrow #{target.name},
+                        out: borrow mut IpcWriter
+                    ) {
+                        out.uintField(1, v.raw)
+                    }
 
-                function decode_#{target.name}(input: borrow mut IpcReader) -> #{target.name} {
-                    var slot: U64 = 0
-                    while !input.atEnd() {
-                        let key = input.nextKey()
-                        if key != 0 {
-                            let tag = WireKey.tag(key)
-                            let wire = key & 3
-                            var matched = false
-                            if tag == 1 && wire == 0 {
-                                slot = input.takeVarUInt()
-                                matched = true
-                            }
-                            if !matched {
-                                input.skip(WireKey.shape(wire))
+                    function decode_#{target.name}(input: borrow mut IpcReader) -> #{target.name} {
+                        var slot: U64 = 0
+                        while !input.atEnd() {
+                            let key = input.nextKey()
+                            if key != 0 {
+                                let tag = WireKey.tag(key)
+                                let wire = key & 3
+                                var matched = false
+                                if tag == 1 && wire == 0 {
+                                    slot = input.takeVarUInt()
+                                    matched = true
+                                }
+                                if !matched {
+                                    input.skip(WireKey.shape(wire))
+                                }
                             }
                         }
+                        return #{target.name}(slot)
                     }
-                    return #{target.name}(slot)
-                }
 
-                function empty_#{target.name}() -> #{target.name} {
-                    var reader = frameReader([])
-                    return decode_#{target.name}(reader)
-                }
+                    function empty_#{target.name}() -> #{target.name} {
+                        var reader = frameReader([])
+                        return decode_#{target.name}(reader)
+                    }
 
+                }
+            }
+            "bool" -> {
+                body = quote {
+                    function encode_#{target.name}(
+                        v: borrow #{target.name},
+                        out: borrow mut IpcWriter
+                    ) {
+                        out.boolField(1, v.raw)
+                    }
+
+                    function decode_#{target.name}(input: borrow mut IpcReader) -> #{target.name} {
+                        var slot: Bool = false
+                        while !input.atEnd() {
+                            let key = input.nextKey()
+                            if key != 0 {
+                                let tag = WireKey.tag(key)
+                                let wire = key & 3
+                                var matched = false
+                                if tag == 1 && wire == 0 {
+                                    slot = input.takeBool()
+                                    matched = true
+                                }
+                                if !matched {
+                                    input.skip(WireKey.shape(wire))
+                                }
+                            }
+                        }
+                        return #{target.name}(slot)
+                    }
+
+                    function empty_#{target.name}() -> #{target.name} {
+                        var reader = frameReader([])
+                        return decode_#{target.name}(reader)
+                    }
+
+                }
+            }
+            "float" -> {
+                body = quote {
+                    function encode_#{target.name}(
+                        v: borrow #{target.name},
+                        out: borrow mut IpcWriter
+                    ) {
+                        out.floatField(1, Float(v.raw))
+                    }
+
+                    function decode_#{target.name}(input: borrow mut IpcReader) -> #{target.name} {
+                        var slot: Float = 0.0
+                        while !input.atEnd() {
+                            let key = input.nextKey()
+                            if key != 0 {
+                                let tag = WireKey.tag(key)
+                                let wire = key & 3
+                                var matched = false
+                                if tag == 1 && wire == 1 {
+                                    slot = input.takeFloat()
+                                    matched = true
+                                }
+                                if !matched {
+                                    input.skip(WireKey.shape(wire))
+                                }
+                            }
+                        }
+                        return #{target.name}(slot)
+                    }
+
+                    function empty_#{target.name}() -> #{target.name} {
+                        var reader = frameReader([])
+                        return decode_#{target.name}(reader)
+                    }
+
+                }
+            }
+            else -> {}
         }
     }
-    "bool" -> {
-        body = quote {
-            function encode_#{target.name}(v: borrow #{target.name}, out: borrow mut IpcWriter) {
-                out.boolField(1, v.raw)
-            }
-
-            function decode_#{target.name}(input: borrow mut IpcReader) -> #{target.name} {
-                var slot: Bool = false
-                while !input.atEnd() {
-                    let key = input.nextKey()
-                    if key != 0 {
-                        let tag = WireKey.tag(key)
-                        let wire = key & 3
-                        var matched = false
-                        if tag == 1 && wire == 0 {
-                            slot = input.takeBool()
-                            matched = true
-                        }
-                        if !matched {
-                            input.skip(WireKey.shape(wire))
-                        }
-                    }
-                }
-                return #{target.name}(slot)
-            }
-
-            function empty_#{target.name}() -> #{target.name} {
-                var reader = frameReader([])
-                return decode_#{target.name}(reader)
-            }
-
-    }
-}
-"float" -> {
-    body = quote {
-        function encode_#{target.name}(v: borrow #{target.name}, out: borrow mut IpcWriter) {
-            out.floatField(1, Float(v.raw))
-        }
-
-        function decode_#{target.name}(input: borrow mut IpcReader) -> #{target.name} {
-            var slot: Float = 0.0
-            while !input.atEnd() {
-                let key = input.nextKey()
-                if key != 0 {
-                    let tag = WireKey.tag(key)
-                    let wire = key & 3
-                    var matched = false
-                    if tag == 1 && wire == 1 {
-                        slot = input.takeFloat()
-                        matched = true
-                    }
-                    if !matched {
-                        input.skip(WireKey.shape(wire))
-                    }
-                }
-            }
-            return #{target.name}(slot)
-        }
-
-        function empty_#{target.name}() -> #{target.name} {
-            var reader = frameReader([])
-            return decode_#{target.name}(reader)
-        }
-
-}
-}
-else -> {}
-}
-}
-return body
+    return body
 }

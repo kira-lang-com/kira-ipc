@@ -1,10 +1,5 @@
-Package TypedMessages {
-    let version = "0.1.0"
-    let kira = "0.1.0"
-    let kind = PackageKind.App
-    let defaults = Defaults { executionMode: Backend.Llvm, buildTarget: BuildTarget.Host }
-    let allowThinFfiShim = true
-    let dependencies = [
-        Dependency { name: "KiraIpc", path: "../.." }
-    ]
+construct TypedMessages extends Package {
+    let version: String = "0.1.0"
+    let kind: PackageKind = .App
+    let dependencies: [Dependency] = [Dependency { name: "KiraIpc", path: "../.." }]
 }

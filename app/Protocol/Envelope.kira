@@ -66,13 +66,8 @@ extend IpcEnvelope {
 //
 // The soundness is answered here rather than left to the caller to ask, because
 // this is the one place a frame from another process is first believed.
-struct IpcArrival {
-    var envelope: IpcEnvelope
-    var sound: Bool
-}
-
-function arrival(bytes: [U8]) -> IpcArrival {
+function arrival(bytes: [U8]) -> (IpcEnvelope, Bool) {
     var reader = frameReader(move bytes)
     let envelope = decode_IpcEnvelope(reader)
-    return IpcArrival { envelope: move envelope, sound: reader.ok() }
+    return (move envelope, reader.ok())
 }
