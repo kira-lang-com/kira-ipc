@@ -12,3 +12,7 @@ Everything that can be ordinary Kira is ordinary Kira. The native library is onl
 # Specs
 
 Any spec is the rule. Read it before changing what it covers and do exactly what it says. If the spec does not say it, it does not exist: never invent a layout, encoding, convention or meaning to make a case work, and never route around a limit the spec sets. A case the spec does not cover is a question for the user, not a decision.
+
+## Release notes
+
+Update `RELEASE.md` whenever a user-facing feature or fix is added. Keep it focused on the current package version: when the version changes, replace the heading and carry forward only notes for the new release. Write concrete, accurate notes before the change lands; the GitHub release workflow publishes this file.
