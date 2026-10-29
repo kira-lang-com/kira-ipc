@@ -1,0 +1,201 @@
+//! A channel with call numbers: requests, responses, faults and events over one
+//! [`IpcChannel`].
+//!
+//! A port numbers the calls it sends and hands back what arrives. The
+//! application matches a response to its request by the call number the request
+//! was given. A port has no dispatch table and no generated stubs.
+//!
+//! A port never blocks. A shell pumps its ports once a frame, beside its window.
+//! Blocking on a socket would stall that frame.
+
+import Foundation
+
+/// What one [`IpcPort.pump`] produced.
+///
+/// Three outcomes and no others. A single `arrived` flag beside a `sound` flag
+/// would describe four states, and one of them (arrived but not sound) would be
+/// meaningless. This enum has no such state.
+public enum IpcDeliveryKind {
+    /// Nothing was waiting. This is the common case, because a port is pumped every frame.
+    Quiet
+    /// A frame arrived and can be believed.
+    Sound
+    /// A frame arrived and cannot be believed. It may be truncated, it may come
+    /// from a build that disagrees, or it may be something else on the name.
+    /// None of those stops this process.
+    Unreadable
+}
+
+/// The result of one [`IpcPort.pump`].
+public struct IpcDelivery {
+    /// What arrived, if anything.
+    var kind: IpcDeliveryKind = IpcDeliveryKind.Quiet
+    /// The envelope of the frame that arrived. Empty when nothing arrived.
+    var envelope: IpcEnvelope = empty_IpcEnvelope()
+    /// The OS handle that arrived with the frame, or `0`.
+    ///
+    /// The caller owns the handle from here, because the channel has released it.
+    var handle: Number = 0
+
+    /// Returns whether anything arrived, readable or not.
+    function arrived() -> Bool {
+        return kind != IpcDeliveryKind.Quiet
+    }
+
+    /// Returns whether what arrived can be acted on.
+    function sound() -> Bool {
+        return kind == IpcDeliveryKind.Sound
+    }
+}
+
+/// A port over one channel, numbering the calls it sends.
+public struct IpcPort {
+    /// The channel the port sends and receives on.
+    var channel: IpcChannel = IpcChannel { id: 0 }
+    /// The call number the next request will carry.
+    ///
+    /// Call numbers start at one, so zero stays free for an event, which has no call.
+    var nextCall: Number = 1
+
+    /// Returns whether the port's channel can still carry frames.
+    function isOpen() -> Bool {
+        return channel.isOpen()
+    }
+
+    /// Sends a request to a service and returns the call number its answer will carry.
+    ///
+    /// Keep the call number for as long as the request is waiting.
+    ///
+    /// Returns `0` when the request did not go. No answer will come for it, so a
+    /// caller that waited on it would wait forever on a peer that has quit.
+    function request(
+        borrow mut self,
+        service: borrow String,
+        method: borrow String,
+        payload: borrow [UN8]
+    ) -> Number {
+        let call = nextCall
+        nextCall++
+        let sent = channel.sendEnvelope(
+            IpcEnvelope {
+                service: service,
+                method: method,
+                kind: IpcKind.Request,
+                call: call,
+                payload: payload
+            }
+        )
+        if !sent {
+            return 0
+        }
+        return call
+    }
+
+    /// Sends the answer to the request numbered `call`.
+    ///
+    /// Returns `false` when the frame did not go.
+    function respond(
+        call: Number,
+        service: borrow String,
+        method: borrow String,
+        payload: borrow [UN8]
+    ) -> Bool {
+        return channel.sendEnvelope(
+            IpcEnvelope {
+                service: service,
+                method: method,
+                kind: IpcKind.Response,
+                call: call,
+                payload: payload
+            }
+        )
+    }
+
+    /// Sends a fault to the request numbered `call`.
+    ///
+    /// A fault is a normal answer. Its payload is whatever the service defines
+    /// as a refusal, and this layer does not invent one.
+    function fault(
+        call: Number,
+        service: borrow String,
+        method: borrow String,
+        payload: borrow [UN8]
+    ) -> Bool {
+        return channel.sendEnvelope(
+            IpcEnvelope {
+                service: service,
+                method: method,
+                kind: IpcKind.Fault,
+                call: call,
+                payload: payload
+            }
+        )
+    }
+
+    /// Sends an event that carries an OS handle.
+    ///
+    /// An event is used rather than a request because a surface is announced:
+    /// the peer is told what it now has, and nothing is expected back.
+    function emitHandle(
+        service: borrow String,
+        method: borrow String,
+        payload: borrow [UN8],
+        handle: Number
+    ) -> Bool {
+        return channel.sendEnvelopeWithHandle(
+            IpcEnvelope {
+                service: service,
+                method: method,
+                kind: IpcKind.Event,
+                call: 0,
+                payload: payload
+            },
+            handle
+        )
+    }
+
+    /// Sends an event. Events carry no call number, because nothing waits for them.
+    function emit(service: borrow String, method: borrow String, payload: borrow [UN8]) -> Bool {
+        return channel.sendEnvelope(
+            IpcEnvelope {
+                service: service,
+                method: method,
+                kind: IpcKind.Event,
+                call: 0,
+                payload: payload
+            }
+        )
+    }
+
+    /// Receives at most one frame, if one is waiting.
+    ///
+    /// One frame per call is deliberate. A caller that wants everything waiting
+    /// loops until [`IpcDelivery.arrived`] is `false`. A caller that wants to bound
+    /// its work stops when it chooses. Draining without a bound would let a busy
+    /// peer decide how long this process's frame takes.
+    function pump() -> IpcDelivery {
+        let frame = channel.receive()
+        if frame.bytes.count == 0 {
+            return IpcDelivery {}
+        }
+        let (envelope, sound) = arrival(frame.bytes)
+        let kind: IpcDeliveryKind = sound ? .Sound : .Unreadable
+        return IpcDelivery { kind: move kind, envelope: move envelope, handle: frame.handle }
+    }
+
+    /// Closes the port's channel.
+    function close() {
+        channel.close()
+    }
+}
+
+/// Returns a port over `channel`, with call numbers starting at one.
+///
+/// # Examples
+///
+/// ```kira
+/// let port = port(connect("example.ipc"))
+/// ```
+public function port(channel: IpcChannel) -> IpcPort {
+    return IpcPort { channel: move channel, nextCall: 1 }
+}

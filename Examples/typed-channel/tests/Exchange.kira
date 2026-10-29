@@ -1,0 +1,50 @@
+import Foundation
+import KiraIpc
+
+// One request and one answer across a real channel, through the same service
+// function the example runs.
+
+function awaitFrame(port: borrow mut IpcPort) -> IpcDelivery {
+    var turns = 0
+    while turns < 1000 {
+        let delivery = port.pump()
+        if delivery.arrived() { return delivery }
+        turns++
+    }
+    return IpcDelivery {}
+}
+
+@Test
+function requestIsAnsweredOverARealChannel() {
+    let name = "kira-ipc-test-exchange"
+    let endpoint = listen(name)
+    expect!(endpoint.isOpen())
+    var caller = port(connect(name))
+    var service = port(endpoint.accept())
+    expect!(caller.isOpen())
+    expect!(service.isOpen())
+
+    var request = IpcWriter {}
+    encode_OpenTab(OpenTab { address: "https://example.com", foreground: true }, request)
+    let call = caller.request(ServiceName.browser, "tabs.open", copy request.bytes)
+    expect!(call != 0)
+
+    var served = false
+    var turns = 0
+    while turns < 1000 && !served {
+        served = serveOnce(service)
+        turns++
+    }
+    expect!(served)
+
+    let answer = awaitFrame(caller)
+    expect!(answer.sound())
+    expect!(answer.envelope.call == call)
+    var reader = answer.envelope.payloadReader()
+    let opened = decode_TabOpened(reader)
+    expect!(opened.address == "https://example.com")
+
+    caller.close()
+    service.close()
+    endpoint.close()
+}

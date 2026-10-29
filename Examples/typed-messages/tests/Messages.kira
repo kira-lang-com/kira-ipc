@@ -1,0 +1,105 @@
+import Foundation
+import KiraIpc
+
+// The example's messages, checked: a round trip, the two build directions, a
+// truncated frame, and the empty value.
+
+@Test
+function tabSummaryRoundTripsItsNestedValues() {
+    let sent = TabSummary {
+        id: 7,
+        title: "a \"quoted\"; title",
+        address: "https://example.com",
+        pinned: true,
+        viewport: Rect { x: 0.0, y: 38.0, width: 1280.0, height: 762.0 },
+        state: LoadState.Loading(0.5),
+        history: ["one", "two"]
+    }
+    var out = IpcWriter {}
+    encode_TabSummary(sent, out)
+    var input = frameReader(copy out.bytes)
+    let back = decode_TabSummary(input)
+    expect!(input.ok())
+    expect!(back.title == "a \"quoted\"; title")
+    expect!(back.pinned)
+    expect!(back.viewport.height == 762.0)
+    expect!(back.history.count == 2)
+    expect!(back.history[1] == "two")
+}
+
+@Test
+function olderReaderReadsANewerBuildAndSkipsItsAdditions() {
+    let ahead = TabSummaryNext {
+        id: 9,
+        title: "from a newer build",
+        address: "https://example.com/next",
+        pinned: false,
+        viewport: Rect { x: 0.0, y: 0.0, width: 1.0, height: 1.0 },
+        state: LoadState.Failed("offline"),
+        history: [],
+        muted: true,
+        zoom: 1.25,
+        labels: ["work"]
+    }
+    var out = IpcWriter {}
+    encode_TabSummaryNext(ahead, out)
+    var input = frameReader(copy out.bytes)
+    let older = decode_TabSummary(input)
+    expect!(input.ok())
+    expect!(older.id == 9)
+    expect!(older.title == "from a newer build")
+}
+
+@Test
+function newerReaderTakesDefaultsForFieldsTheOlderBuildNeverWrote() {
+    var out = IpcWriter {}
+    encode_TabSummary(
+        TabSummary {
+            id: 1,
+            title: "t",
+            address: "a",
+            pinned: false,
+            viewport: Rect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 },
+            state: LoadState.Idle,
+            history: []
+        },
+        out
+    )
+    var input = frameReader(copy out.bytes)
+    let newer = decode_TabSummaryNext(input)
+    expect!(input.ok())
+    expect!(newer.zoom == 1.0)
+    expect!(!newer.muted)
+    expect!(newer.labels.count == 0)
+}
+
+@Test
+function truncatedFrameIsReportedUnsoundWithoutStopping() {
+    var out = IpcWriter {}
+    encode_TabSummary(
+        TabSummary {
+            id: 3,
+            title: "longer title that will be cut",
+            address: "x",
+            pinned: true,
+            viewport: Rect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 },
+            state: LoadState.Idle,
+            history: []
+        },
+        out
+    )
+    var half: [UN8] = []
+    for index in 0..out.bytes.count / 2 { half.append(out.bytes[index]) }
+    var input = frameReader(move half)
+    let partial = decode_TabSummary(input)
+    expect!(!input.ok())
+    expect!(partial.title.count < 30)
+}
+
+@Test
+function emptyEncodingDecodesToEveryDefault() {
+    let nothing = empty_TabSummary()
+    expect!(nothing.title == "")
+    expect!(nothing.id == 0)
+    expect!(nothing.history.count == 0)
+}

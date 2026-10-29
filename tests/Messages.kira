@@ -1,0 +1,165 @@
+import Foundation
+
+// Messages declared with @Derive(IpcMessage): a struct that grows, an enum with
+// payloads, a nested message, and the envelope that wraps every frame.
+
+@Derive(IpcMessage)
+struct Inner {
+    var label: String
+    var weight: Float
+}
+
+@Derive(IpcMessage)
+struct Outer {
+    var id: Number
+    var title: String
+    var loading: Bool
+    var tags: [String]
+    var inner: Inner
+    var blob: [UN8]
+}
+
+@Derive(IpcMessage)
+enum Reply {
+    Empty
+    Count(Number)
+    Named(String)
+    Nested(Inner)
+}
+
+@Derive(IpcMessage)
+struct Prefix {
+    var id: Number
+    var title: String
+}
+
+@Derive(IpcMessage)
+struct Newer {
+    var id: Number
+    var title: String
+    var loading: Bool
+    var tags: [String]
+    var inner: Inner
+    var blob: [UN8]
+    var added: Number = 7
+}
+
+@Test
+function derivedStructRoundTripsEveryFieldKind() {
+    let value = Outer {
+        id: -3,
+        title: "tab; \"one\"",
+        loading: true,
+        tags: ["a", "b"],
+        inner: Inner { label: "x", weight: 2.5 },
+        blob: [UN8(0), UN8(255)]
+    }
+    var out = IpcWriter {}
+    encode_Outer(value, out)
+    var reader = frameReader(copy out.bytes)
+    let back = decode_Outer(reader)
+    expect!(reader.ok())
+    expect!(back.id == -3)
+    expect!(back.title == "tab; \"one\"")
+    expect!(back.loading)
+    expect!(back.tags.count == 2)
+    expect!(back.inner.label == "x")
+    expect!(back.inner.weight == 2.5)
+    expect!(back.blob.count == 2)
+}
+
+@Test
+function olderReaderSkipsFieldsAppendedByANewerPeer() {
+    var out = IpcWriter {}
+    encode_Outer(
+        Outer {
+            id: 1,
+            title: "t",
+            loading: false,
+            tags: [],
+            inner: Inner { label: "", weight: 0.0 },
+            blob: []
+        },
+        out
+    )
+    var reader = frameReader(copy out.bytes)
+    let back = decode_Prefix(reader)
+    expect!(reader.ok())
+    expect!(back.id == 1)
+    expect!(back.title == "t")
+}
+
+@Test
+function newerReaderTakesDefaultForAFieldThePeerDidNotSend() {
+    var out = IpcWriter {}
+    encode_Outer(
+        Outer {
+            id: 9,
+            title: "x",
+            loading: true,
+            tags: ["a"],
+            inner: Inner { label: "i", weight: 1.0 },
+            blob: []
+        },
+        out
+    )
+    var reader = frameReader(copy out.bytes)
+    let back = decode_Newer(reader)
+    expect!(reader.ok())
+    expect!(back.id == 9)
+    expect!(back.loading)
+    expect!(back.added == 7)
+}
+
+@Test
+function enumPayloadsRoundTripIncludingNestedMessages() {
+    var out = IpcWriter {}
+    encode_Reply(Reply.Nested(Inner { label: "deep", weight: 1.5 }), out)
+    encode_Reply(Reply.Count(12), out)
+    var reader = frameReader(copy out.bytes)
+    let first = decode_Reply(reader)
+    let second = decode_Reply(reader)
+    expect!(reader.ok())
+    match first {
+        Nested(inner) -> expect!(inner.label == "deep")
+        Empty -> expect!(false)
+        Count(count) -> expect!(false)
+        Named(name) -> expect!(false)
+    }
+    match second {
+        Count(count) -> expect!(count == 12)
+        Empty -> expect!(false)
+        Named(name) -> expect!(false)
+        Nested(inner) -> expect!(false)
+    }
+}
+
+@Test
+function unknownEnumCaseFailsTheFrame() {
+    var reader = frameReader([UN8(99)])
+    let ignored = decode_Reply(reader)
+    expect!(!reader.ok())
+}
+
+@Test
+function envelopeRoundTripsThroughArrival() {
+    let envelope = IpcEnvelope {
+        service: "example.service",
+        method: "tabs.open",
+        kind: IpcKind.Request,
+        call: 4,
+        payload: [UN8(1), UN8(2)]
+    }
+    let (back, sound) = arrival(envelope.encoded())
+    expect!(sound)
+    expect!(back.service == "example.service")
+    expect!(back.method == "tabs.open")
+    expect!(back.call == 4)
+    expect!(back.payload.count == 2)
+}
+
+@Test
+function damagedEnvelopeIsReportedUnsound() {
+    let (back, sound) = arrival([UN8(255), UN8(255), UN8(255)])
+    expect!(!sound)
+}

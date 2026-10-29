@@ -1,0 +1,78 @@
+//! The envelope every frame carries around its payload: which service a frame
+//! is for, which method it calls, what kind of frame it is, and its call number.
+//!
+//! The envelope is itself a `@Derive(IpcMessage)`. The one structure that must
+//! survive two components being installed from different releases is the one
+//! that says where a frame goes, so it must be able to grow like any message.
+
+import Foundation
+
+/// What a frame is doing, rather than what it says.
+///
+/// A stream is a run of events sharing a call number, and a cancellation is a
+/// request like any other. Both are things a service declares, so the transport
+/// does not need to know about them.
+@Derive(IpcMessage)
+public enum IpcKind {
+    /// Asks a service for something and expects exactly one [`IpcKind.Response`].
+    Request
+    /// The answer to a request, carrying the request's call number.
+    Response
+    /// Something a service announces. It has no call number, and nobody is waiting for it.
+    Event
+    /// The answer a request gets when the service will not or cannot serve it.
+    ///
+    /// A fault is a normal outcome. The peer is working and has declined.
+    Fault
+}
+
+/// The header of one frame: its service, method, kind, call number and payload.
+///
+/// The transport never reads `payload`. Only the two ends know what a method's
+/// payload is, so a method's shape can change without the envelope changing.
+@Derive(IpcMessage)
+public struct IpcEnvelope {
+    /// The component the frame is for, such as `"harmony.browser"`.
+    ///
+    /// A name rather than a number. Components are installed separately, and a
+    /// numeric id would need a registry that both sides agree on.
+    var service: String
+    /// The method being called or announced. A name, so a log is legible without a decoder.
+    var method: String
+    /// What kind of frame this is.
+    var kind: IpcKind
+    /// Ties a response to its request. Zero on an event, because nothing waits for one.
+    var call: Number
+    /// The message itself, encoded by the generated encoder of its type.
+    var payload: [UN8]
+}
+
+extend IpcEnvelope {
+    /// Returns the bytes of this frame.
+    function encoded() -> [UN8] {
+        var out = IpcWriter {}
+        encode_IpcEnvelope(self, out)
+        return out.bytes
+    }
+
+    /// Returns a reader over the payload, for the generated decoder of the method's message.
+    function payloadReader() -> IpcReader {
+        return frameReader(payload)
+    }
+}
+
+/// Decodes a received frame and reports whether it was sound.
+///
+/// The soundness check happens here, because this is the first place a frame
+/// from another process is trusted. A caller does not have to ask separately.
+///
+/// # Examples
+///
+/// ```kira
+/// let (envelope, sound) = arrival([])
+/// ```
+public function arrival(bytes: [UN8]) -> (IpcEnvelope, Bool) {
+    var reader = frameReader(move bytes)
+    let envelope = decode_IpcEnvelope(reader)
+    return (move envelope, reader.ok())
+}

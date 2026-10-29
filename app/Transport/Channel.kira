@@ -1,0 +1,190 @@
+//! The channel: a published name that processes connect to, and the connection
+//! that carries whole frames in both directions.
+//!
+//! Every function here is a thin reading of `NativeLibs/kira_ipc.h`. A frame
+//! goes out in one call, because a Kira array fills a pointer word at the seam.
+//! A frame comes in eight bytes at a time, because a user FFI signature cannot
+//! return a byte array. Frames are control messages of a few hundred bytes, sent
+//! tens of times a second. Pixels never travel this way. A surface is shared,
+//! and what crosses is the handle that names it.
+//!
+//! The fixed-width numbers in this file are the boundary with the native
+//! library. Nothing outside this file names them.
+
+import Foundation
+
+/// Converts a Kira byte array to the `uint8_t` array the native side takes.
+///
+/// A frame is a few hundred bytes, so the copy costs little.
+function cBytes(bytes: borrow [UN8]) -> [U8] {
+    var out: [U8] = []
+    for byte in bytes {
+        out.append(U8(byte))
+    }
+    return out
+}
+
+/// One frame off a channel: its bytes, and the handle that rode with it.
+///
+/// Zero is never a handle. A frame that carried none and a frame whose handle was
+/// already claimed both answer `0`, so a caller that expects no handle never has
+/// to check.
+public struct IpcFrame {
+    /// The frame's bytes, as sent.
+    var bytes: [UN8] = []
+    /// The OS handle sent with the frame, or `0` when none came.
+    var handle: Number = 0
+}
+
+/// A published name that other processes connect to.
+public struct IpcEndpoint {
+    /// The native endpoint's id. Zero or less means the name is not held.
+    let id: N32
+
+    /// Returns whether this endpoint holds its name.
+    function isOpen() -> Bool {
+        return id > 0
+    }
+
+    /// Returns the next process that connected, or a closed channel when none has.
+    ///
+    /// This never blocks. A shell accepts beside its window, once per frame, and
+    /// a blocking accept would stall the frame.
+    function accept() -> IpcChannel {
+        if id <= 0 {
+            return IpcChannel { id: 0 }
+        }
+        return IpcChannel { id: N32(kira_ipc_accept(I32(id))) }
+    }
+
+    /// Stops publishing the name and releases the endpoint.
+    function close() {
+        if id > 0 {
+            kira_ipc_close(I32(id))
+        }
+    }
+}
+
+/// One connection, carrying frames in both directions.
+public struct IpcChannel {
+    /// The native channel's id. Zero or less means no connection.
+    let id: N32
+
+    /// Returns whether this channel can still carry frames.
+    ///
+    /// A channel that was never opened and a channel whose peer has quit both
+    /// answer `false`. Callers stop using either.
+    function isOpen() -> Bool {
+        if id <= 0 {
+            return false
+        }
+        return Number(kira_ipc_alive(I32(id))) != 0
+    }
+
+    /// Sends one frame. Returns `false` when it did not go.
+    ///
+    /// A peer that has quit since the last frame also returns `false`.
+    function send(bytes: borrow [UN8]) -> Bool {
+        if id <= 0 {
+            return false
+        }
+        let native = cBytes(bytes)
+        return Number(kira_ipc_send(I32(id), native, I32(native.count))) != 0
+    }
+
+    /// Encodes `envelope` and sends it as one frame.
+    function sendEnvelope(envelope: borrow IpcEnvelope) -> Bool {
+        return send(envelope.encoded())
+    }
+
+    /// Sends one frame with an OS handle.
+    ///
+    /// The channel transfers the handle, not the message. A handle names a GPU
+    /// surface, a dmabuf or a shared memory object, and it means nothing outside
+    /// the process that owns it. The peer receives its own handle to the same
+    /// object.
+    function sendHandleWith(bytes: borrow [UN8], handle: Number) -> Bool {
+        if id <= 0 {
+            return false
+        }
+        let native = cBytes(bytes)
+        return Number(kira_ipc_send_handle(I32(id), native, I32(native.count), handle)) != 0
+    }
+
+    /// Encodes `envelope` and sends it with an OS handle.
+    function sendEnvelopeWithHandle(envelope: borrow IpcEnvelope, handle: Number) -> Bool {
+        return sendHandleWith(envelope.encoded(), handle)
+    }
+
+    /// Returns the frame waiting on this channel, or an empty frame when none is.
+    ///
+    /// A frame arrives whole or not at all. The native side publishes nothing
+    /// until every byte has arrived, so no partial state is kept between calls.
+    ///
+    /// The frame's handle is claimed before the frame is released. Releasing the
+    /// frame closes any handle nobody has claimed, and that handle would
+    /// otherwise stay open until this process exits.
+    function receive() -> IpcFrame {
+        var frame: [UN8] = []
+        if id <= 0 {
+            return IpcFrame { bytes: move frame, handle: 0 }
+        }
+        let length = Number(kira_ipc_poll(I32(id)))
+        if length <= 0 {
+            return IpcFrame { bytes: move frame, handle: 0 }
+        }
+        for at in 0..trunc((length + 7) / 8) {
+            // One call per eight bytes, little-endian. The last word of a frame
+            // whose length is not a multiple of eight has zeros above the real
+            // bytes. The loop stops at `length`, so it never reads them.
+            var word = UNumber(kira_ipc_frame_word(I32(id), I32(at)))
+            var present = length - at * 8
+            if present > 8 {
+                present = 8
+            }
+            for _ in 0..present {
+                frame.append(UN8(word & 255))
+                word = word >> 8
+            }
+        }
+        let handle = Number(kira_ipc_frame_handle(I32(id)))
+        kira_ipc_frame_release(I32(id))
+        return IpcFrame { bytes: move frame, handle: handle }
+    }
+
+    /// Closes the connection.
+    function close() {
+        if id > 0 {
+            kira_ipc_close(I32(id))
+        }
+    }
+}
+
+/// Publishes `name` and starts accepting connections on it.
+///
+/// An endpoint that is not open means the name could not be taken. Usually
+/// something else already holds it.
+///
+/// # Examples
+///
+/// ```kira
+/// let endpoint = listen("example.ipc")
+/// ```
+public function listen(name: borrow String) -> IpcEndpoint {
+    return IpcEndpoint { id: N32(kira_ipc_listen(name)) }
+}
+
+/// Connects to a published `name`.
+///
+/// A channel that is not open is the ordinary result when the peer is not
+/// installed, or is installed but has not started yet. Both cases are handled
+/// the same way, so a caller does not need to tell them apart.
+///
+/// # Examples
+///
+/// ```kira
+/// let channel = connect("example.ipc")
+/// ```
+public function connect(name: borrow String) -> IpcChannel {
+    return IpcChannel { id: N32(kira_ipc_connect(name)) }
+}

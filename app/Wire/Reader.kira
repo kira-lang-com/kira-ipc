@@ -1,0 +1,241 @@
+//! Reads KIP/1 frames without ever stopping the program.
+//!
+//! The bytes come from another process. That process may be a different
+//! version, may be mid-crash, or may be something else entirely listening on the
+//! name. A malformed frame therefore records a failure and decoding continues.
+//! A truncated value, a length that runs past the frame, or a region that
+//! overruns its parent each set [`IpcReader.failed`], and every later read
+//! answers a default. The generated decoder runs to completion, and
+//! [`IpcReader.ok`] says whether the value it produced is sound.
+
+import Foundation
+
+/// A reader over one frame, or over one nested region of a frame.
+///
+/// A reader is created with [`frameReader`]. Nested regions reuse the same
+/// reader with a lower `limit`, so one reader carries one `failed` flag for the
+/// whole frame.
+public struct IpcReader {
+    /// The frame's bytes.
+    var bytes: [UN8] = []
+    /// The index of the next byte to read.
+    var cursor: Number = 0
+    /// One past the last byte this reader may read.
+    ///
+    /// A nested region lowers it for the length of the region and restores it
+    /// afterwards. That stops a nested message from reading its parent's bytes
+    /// when its own length is wrong.
+    var limit: Number = 0
+    /// Whether a read has gone wrong. Once set, it stays set.
+    var failed: Bool = false
+
+    /// Returns whether everything read so far was structurally sound.
+    ///
+    /// Once any read has failed, this stays `false`. A decode that went wrong
+    /// partway produced a value from bytes it was misreading, and the fields it
+    /// read before that point cannot be separated from the rest.
+    ///
+    /// # Examples
+    ///
+    /// ```kira
+    /// let reader = frameReader([])
+    /// let sound = reader.ok()
+    /// ```
+    function ok() -> Bool {
+        return !failed
+    }
+
+    /// Returns whether the reader has reached its limit.
+    function atEnd() -> Bool {
+        return cursor >= limit
+    }
+
+    /// Records that a read went wrong, and moves the cursor to the limit.
+    ///
+    /// Reading stops where it went wrong, so bytes whose meaning is already lost
+    /// are not read.
+    function fail(borrow mut self) {
+        self.failed = true
+        self.cursor = self.limit
+    }
+
+    /// Reads one byte, or fails and returns `0` at the limit.
+    function takeByte(borrow mut self) -> Number {
+        if cursor >= limit {
+            fail()
+            return 0
+        }
+        let value = Number(bytes[cursor])
+        cursor++
+        return value
+    }
+
+    /// Reads an unsigned LEB128 varint, or fails and returns `0`.
+    ///
+    /// A varint longer than ten bytes is refused. Ten bytes is the most an
+    /// unsigned 64-bit value takes, and a run of set high bits would otherwise
+    /// continue until the frame ends.
+    function takeVarUInt(borrow mut self) -> UNumber {
+        var result: UNumber = 0
+        for group in 0..10 {
+            let byte = takeByte()
+            if failed {
+                return 0
+            }
+            let payload = byte & 127
+            // The tenth group carries only bit 63, so a larger payload would
+            // overflow 64 bits.
+            if group == 9 && payload > 1 {
+                fail()
+                return 0
+            }
+            result = result | (payload << (group * 7))
+            if byte < 128 {
+                return result
+            }
+        }
+        fail()
+        return 0
+    }
+
+    /// Reads a zigzag varint, the inverse of `IpcWriter.putVarInt`.
+    ///
+    /// An even code is the non-negative value that is half of it, and an odd
+    /// code is the negative value whose twin is half of it.
+    function takeVarInt(borrow mut self) -> Number {
+        let raw = Number(takeVarUInt())
+        if (raw & 1) == 0 {
+            return raw >> 1
+        }
+        return -(raw >> 1) - 1
+    }
+
+    /// Reads eight little-endian bytes, or fails and returns `0`.
+    function takeFixed(borrow mut self) -> UNumber {
+        var result: UNumber = 0
+        for step in 0..8 {
+            let byte = takeByte()
+            if failed {
+                return 0
+            }
+            result = result | (byte << (step * 8))
+        }
+        return result
+    }
+
+    /// Reads a Bool, which is a varint that is zero for false.
+    function takeBool(borrow mut self) -> Bool {
+        return takeVarUInt() != 0
+    }
+
+    /// Reads a Float from its eight bytes, the exact inverse of `IpcWriter.putFloat`.
+    function takeFloat(borrow mut self) -> Float {
+        return kira_ipc_f64_from_bits(U64(takeFixed()))
+    }
+
+    /// Reads a byte count and checks it against the bytes that remain.
+    ///
+    /// A count that names more bytes than the reader holds fails here, so no
+    /// later read can go past the limit. The count is compared with the remaining
+    /// bytes, not used as an index, so a count near the top of the 64-bit range
+    /// is refused without a read.
+    function takeLength(borrow mut self) -> Number {
+        let declared = takeVarUInt()
+        if failed {
+            return 0
+        }
+        if declared > limit - cursor {
+            fail()
+            return 0
+        }
+        return Number(declared)
+    }
+
+    /// Reads a length-prefixed byte array.
+    function takeBytes(borrow mut self) -> [UN8] {
+        let count = takeLength()
+        var out: [UN8] = []
+        for index in 0..count {
+            out.append(bytes[cursor + index])
+        }
+        self.cursor = self.cursor + count
+        return out
+    }
+
+    /// Reads a length-prefixed UTF-8 string.
+    function takeString(borrow mut self) -> String {
+        let raw = takeBytes()
+        if raw.count == 0 {
+            return ""
+        }
+        let native = cBytes(raw)
+        return kira_ipc_text_from_bytes(native, I32(native.count))
+    }
+
+    /// Starts a nested region: reads its byte count and lowers the limit to its end.
+    ///
+    /// Returns the limit that was in force, for [`IpcReader.leaveRegion`] to
+    /// restore.
+    function enterRegion(borrow mut self) -> Number {
+        let count = takeLength()
+        let previous = limit
+        self.limit = self.cursor + count
+        return previous
+    }
+
+    /// Ends a nested region and restores the limit `enterRegion` returned.
+    ///
+    /// Bytes the region's reader did not consume are skipped. A message that
+    /// carries fields this build does not know reaches this point with bytes to
+    /// spare, and skipping them is what keeps the message readable.
+    function leaveRegion(borrow mut self, previous: Number) {
+        self.cursor = self.limit
+        self.limit = previous
+    }
+
+    /// Reads the next field's key, or returns `0` at the end of the region.
+    ///
+    /// Tags are one-based, so `0` cannot be a field's key.
+    function nextKey(borrow mut self) -> Number {
+        if atEnd() {
+            return 0
+        }
+        let key = Number(takeVarUInt())
+        if failed {
+            return 0
+        }
+        return key
+    }
+
+    /// Steps over one field value whose shape is `wire`, which this build does not name.
+    ///
+    /// A peer built from a newer copy of a message writes fields this build
+    /// never declared. Each one costs a single read to pass over, so nothing
+    /// after it is misread.
+    function skip(borrow mut self, wire: borrow IpcWire) {
+        match wire {
+            Var -> {
+                let ignored = takeVarUInt()
+            }
+            Fixed -> {
+                let ignored = takeFixed()
+            }
+            Len -> {
+                let count = takeLength()
+                self.cursor = self.cursor + count
+            }
+        }
+    }
+}
+
+/// Returns a reader over a whole frame.
+///
+/// # Examples
+///
+/// ```kira
+/// let reader = frameReader([0, 2])
+/// ```
+public function frameReader(bytes: [UN8]) -> IpcReader {
+    let count = bytes.count
+    return IpcReader { bytes: move bytes, cursor: 0, limit: count, failed: false }
+}

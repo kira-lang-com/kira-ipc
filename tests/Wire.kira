@@ -1,0 +1,96 @@
+import Foundation
+
+// The wire format on its own: fields written with keys, read back, and a
+// reader that stops at a bad frame without trapping.
+
+@Test
+function scalarFieldsReadBackWhatWasWritten() {
+    var out = IpcWriter {}
+    out.intField(1, -42)
+    out.uintField(2, 300)
+    out.boolField(3, true)
+    out.stringField(4, "a \"quoted\"; {braced} title")
+    var reader = frameReader(copy out.bytes)
+    expect!(reader.nextKey() != 0)
+    expect!(reader.takeVarInt() == -42)
+    expect!(reader.nextKey() != 0)
+    expect!(reader.takeVarUInt() == 300)
+    expect!(reader.nextKey() != 0)
+    expect!(reader.takeBool())
+    expect!(reader.nextKey() != 0)
+    expect!(reader.takeString() == "a \"quoted\"; {braced} title")
+    expect!(reader.atEnd())
+    expect!(reader.ok())
+}
+
+@Test
+function floatsKeepTheirBitsExactly() {
+    var out = IpcWriter {}
+    out.floatField(1, 0.1)
+    var reader = frameReader(copy out.bytes)
+    expect!(reader.nextKey() != 0)
+    let value = reader.takeFloat()
+    expect!(value == 0.1)
+    expect!(reader.ok())
+}
+
+@Test
+function keysCarryTagAndShape() {
+    let key = WireKey.make(7, IpcWire.Len)
+    expect!(WireKey.tag(key) == 7)
+    match WireKey.wire(key) {
+        Len -> expect!(true)
+        Var -> expect!(false)
+        Fixed -> expect!(false)
+    }
+}
+
+@Test
+function unknownFieldsAreSkippedAndTheRestIsRead() {
+    var out = IpcWriter {}
+    out.stringField(9, "from a newer peer")
+    out.intField(1, 5)
+    var reader = frameReader(copy out.bytes)
+    var seen: Number = 0
+    while !reader.atEnd() {
+        let key = reader.nextKey()
+        if key == 0 { break }
+        if WireKey.tag(key) == 1 {
+            seen = Number(reader.takeVarInt())
+        } else {
+            reader.skip(WireKey.wire(key))
+        }
+    }
+    expect!(seen == 5)
+    expect!(reader.ok())
+}
+
+@Test
+function truncatedFrameFailsWithoutTrapping() {
+    var out = IpcWriter {}
+    out.stringField(1, "longer than what remains")
+    var head: [UN8] = []
+    for index in 0..3 { head.append(out.bytes[index]) }
+    var reader = frameReader(move head)
+    expect!(reader.nextKey() != 0)
+    let text = reader.takeString()
+    expect!(text == "")
+    expect!(!reader.ok())
+}
+
+@Test
+function lengthPastTheFrameFailsWithoutTrapping() {
+    var reader = frameReader([UN8(2), UN8(200)])
+    expect!(reader.nextKey() != 0)
+    expect!(reader.takeBytes().count == 0)
+    expect!(!reader.ok())
+}
+
+@Test
+function varintLongerThanTenBytesIsRefused() {
+    var bytes: [UN8] = []
+    for _ in 0..12 { bytes.append(UN8(255)) }
+    var reader = frameReader(move bytes)
+    expect!(reader.takeVarUInt() == 0)
+    expect!(!reader.ok())
+}

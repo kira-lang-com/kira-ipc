@@ -1,0 +1,76 @@
+//! The wire shape of a field in KIP/1: how a value is keyed, how its size is
+//! found, and how a decoder steps over a field it does not know.
+//!
+//! Two components are installed separately, so a decoder built against another
+//! version of a message must still read the fields it knows and skip the rest.
+//! The format is built for that first. Each field carries a key, and a key
+//! names the value's shape, so a decoder can always find where the value ends.
+//!
+//! A field the encoder did not write is not an error. The decoder starts from
+//! the type's own defaults and overwrites only what arrived. Adding a field to a
+//! message is therefore not a breaking change in either direction.
+
+import Foundation
+
+/// The three shapes a value can take on the wire.
+///
+/// A decoder needs only this to skip a value it does not understand. What the
+/// bytes mean is the generated decoder's business, and it reads only the fields
+/// it declared.
+enum IpcWire {
+    /// A LEB128 varint. Every integer, every Bool and every enum tag.
+    Var
+    /// Eight bytes, little-endian. A Float, and only a Float.
+    Fixed
+    /// A varint byte count followed by that many bytes. A String, a byte array, a
+    /// nested message or an array: anything whose size is its own.
+    Len
+}
+
+extend IpcWire {
+    /// Returns the two-bit code this shape occupies in a field key.
+    function keyBits() -> Number {
+        match self {
+            Var -> return 0
+            Fixed -> return 1
+            Len -> return 2
+        }
+    }
+}
+
+/// Builds and takes apart field keys.
+///
+/// A key is one varint: the field's tag in the high bits and its wire shape in
+/// the low two. Packing both into one varint lets a decoder skip an unknown
+/// field with one read, because the shape arrives with the tag.
+namespace WireKey {
+    /// Returns the shape a two-bit code names.
+    ///
+    /// Code `3` is unassigned. It reads as a varint, so a decoder steps over the
+    /// value and keeps going rather than losing the rest of the frame.
+    function shape(code: Number) -> IpcWire {
+        match code {
+            1 -> return IpcWire.Fixed
+            2 -> return IpcWire.Len
+            else -> return IpcWire.Var
+        }
+    }
+
+    /// Returns the key for a field `tag` with the shape `wire`.
+    ///
+    /// Tags are one-based, so key `0` is never a field. A run of zero bytes at
+    /// the end of a buffer therefore cannot read as one.
+    function make(tag: Number, wire: borrow IpcWire) -> Number {
+        return (tag << 2) | wire.keyBits()
+    }
+
+    /// Returns the field tag a key carries.
+    function tag(key: Number) -> Number {
+        return key >> 2
+    }
+
+    /// Returns the shape a key carries.
+    function wire(key: Number) -> IpcWire {
+        return WireKey.shape(key & 3)
+    }
+}

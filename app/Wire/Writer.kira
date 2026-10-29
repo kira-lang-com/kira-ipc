@@ -1,0 +1,166 @@
+//! Writes KIP/1 frames.
+//!
+//! A writer is a byte array and the arithmetic that places values in it. It
+//! knows nothing about messages. The encoders that the derive macro generates
+//! are written in terms of the field calls here.
+//!
+//! A nested value, such as a message inside a message or an array of either,
+//! is built in a writer of its own and then handed over whole. A
+//! length-delimited region must know its length before it is written, and the
+//! only way to know it is to build the region first.
+
+import Foundation
+
+/// A KIP/1 frame under construction.
+///
+/// Create one with `IpcWriter {}`, call the field methods in declaration order,
+/// and read the finished frame from `bytes`.
+///
+/// # Examples
+///
+/// ```kira
+/// var out = IpcWriter {}
+/// out.intField(1, 42)
+/// out.stringField(2, "hello")
+/// let frame = out.bytes
+/// ```
+public struct IpcWriter {
+    /// The bytes written so far.
+    var bytes: [UN8] = []
+
+    /// Appends the low eight bits of `value` as one byte.
+    function putByte(borrow mut self, value: Number) {
+        self.bytes.append(UN8(value & 255))
+    }
+
+    /// Appends `value` as an unsigned LEB128 varint.
+    ///
+    /// The value is written seven bits at a time, low group first, with the high
+    /// bit set on every group except the last. The value is unsigned, so `>>`
+    /// fills with zeros and the loop always terminates.
+    function putVarUInt(borrow mut self, value: UNumber) {
+        var rest = value
+        while rest >= 128 {
+            putByte((rest & 127) | 128)
+            rest = rest >> 7
+        }
+        putByte(rest)
+    }
+
+    /// Appends `value` as a zigzag varint.
+    ///
+    /// A non-negative value `v` is written as `v * 2`, and a negative value as
+    /// `-(v + 1) * 2 + 1`. A small negative number therefore costs one byte, not
+    /// ten.
+    function putVarInt(borrow mut self, value: Number) {
+        if value >= 0 {
+            putVarUInt(value * 2)
+            return
+        }
+        putVarUInt(-(value + 1) * 2 + 1)
+    }
+
+    /// Appends `bits` as eight little-endian bytes.
+    function putFixed(borrow mut self, bits: UNumber) {
+        var rest = bits
+        for _ in 0..8 {
+            putByte(rest & 255)
+            rest = rest >> 8
+        }
+    }
+
+    /// Appends the bytes of `source` as they are, with no length.
+    function putRaw(borrow mut self, source: borrow [UN8]) {
+        for byte in source {
+            self.bytes.append(byte)
+        }
+    }
+
+    /// Appends `value` as a varint: `1` for true and `0` for false.
+    function putBool(borrow mut self, value: Bool) {
+        if value {
+            putVarUInt(1)
+            return
+        }
+        putVarUInt(0)
+    }
+
+    /// Appends the IEEE 754 bits of `value` as eight little-endian bytes.
+    ///
+    /// The bits are copied exactly. Writing a Float as decimal text would lose
+    /// low bits.
+    function putFloat(borrow mut self, value: Float) {
+        putFixed(Number(kira_ipc_f64_bits(value)))
+    }
+
+    /// Appends `value` as its UTF-8 bytes, preceded by their count.
+    ///
+    /// Nothing inside the string is escaped or forbidden. The count says where
+    /// the string ends.
+    function putString(borrow mut self, value: borrow String) {
+        putVarUInt(value.count)
+        for index in 0..value.count {
+            putByte(value.charAt(index))
+        }
+    }
+
+    /// Appends `value` preceded by its byte count.
+    function putBytes(borrow mut self, value: borrow [UN8]) {
+        putVarUInt(value.count)
+        putRaw(value)
+    }
+
+    /// Appends the key for field `tag` with the shape `wire`.
+    function putKey(borrow mut self, tag: Number, wire: borrow IpcWire) {
+        putVarUInt(WireKey.make(tag, wire))
+    }
+
+    /// Writes an integer field: its key, then a zigzag varint.
+    function intField(borrow mut self, tag: Number, value: Number) {
+        putKey(tag, IpcWire.Var)
+        putVarInt(value)
+    }
+
+    /// Writes an unsigned field: its key, then an unsigned varint.
+    ///
+    /// Unsigned values can exceed what a zigzag varint carries, so they are
+    /// written without the zigzag step.
+    function uintField(borrow mut self, tag: Number, value: UNumber) {
+        putKey(tag, IpcWire.Var)
+        putVarUInt(value)
+    }
+
+    /// Writes a Bool field: its key, then `1` or `0` as a varint.
+    function boolField(borrow mut self, tag: Number, value: Bool) {
+        putKey(tag, IpcWire.Var)
+        putBool(value)
+    }
+
+    /// Writes a Float field: its key, then eight bytes.
+    function floatField(borrow mut self, tag: Number, value: Float) {
+        putKey(tag, IpcWire.Fixed)
+        putFloat(value)
+    }
+
+    /// Writes a String field: its key, then its length and UTF-8 bytes.
+    function stringField(borrow mut self, tag: Number, value: borrow String) {
+        putKey(tag, IpcWire.Len)
+        putString(value)
+    }
+
+    /// Writes a byte array field: its key, then its length and bytes.
+    function bytesField(borrow mut self, tag: Number, value: borrow [UN8]) {
+        putKey(tag, IpcWire.Len)
+        putBytes(value)
+    }
+
+    /// Writes a region built elsewhere as a length-delimited field.
+    ///
+    /// Used for a nested message, an array, or an enum with its payload. The
+    /// caller builds the region. This method measures it and places it.
+    function regionField(borrow mut self, tag: Number, region: borrow [UN8]) {
+        putKey(tag, IpcWire.Len)
+        putVarUInt(region.count)
+        putRaw(region)
+    }
+}
