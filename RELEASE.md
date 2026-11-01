@@ -1,5 +1,10 @@
 # 26.10.4
 
+**Project:** KiraIpc  
+**Release week:** 2026-10-26 – 2026-11-01
+
+## Highlights
+
 The first source release of KiraIpc includes:
 
 - `@Derive(IpcMessage)` generation of message encoders, decoders, and empty values.
