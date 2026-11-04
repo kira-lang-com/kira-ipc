@@ -1,14 +1,8 @@
-# 26.10.4
+# 26.11.1
 
 **Project:** KiraIpc  
-**Release week:** 2026-10-26 – 2026-11-01
+**Release week:** 2026-11-02 – 2026-11-08
 
 ## Highlights
 
-The first source release of KiraIpc includes:
-
-- `@Derive(IpcMessage)` generation of message encoders, decoders, and empty values.
-- The KIP/1 wire format for scalar values, strings, byte arrays, arrays, nested messages, and enums.
-- Forward-compatible handling of appended fields and an `ok()` result for malformed or truncated frames.
-
-Field tags follow declaration order: removing or reordering fields breaks compatibility.
+No changes to this package's source files have landed since the `26.10.4` release baseline. This weekly source release updates version metadata only where the package declares a version; it does not claim new functionality or fresh build validation.
