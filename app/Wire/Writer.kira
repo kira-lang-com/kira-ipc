@@ -90,7 +90,9 @@ public struct IpcWriter {
     /// The bits are copied exactly. Writing a Float as decimal text would lose
     /// low bits.
     function putFloat(borrow mut self, value: Float) {
-        putFixed(Number(kira_ipc_f64_bits(value)))
+        unsafe {
+            putFixed(Number(kira_ipc_f64_bits(value)))
+        }
     }
 
     /// Appends `value` as its UTF-8 bytes, preceded by their count.

@@ -54,13 +54,15 @@ public struct IpcEndpoint {
         if id <= 0 {
             return IpcChannel { id: 0 }
         }
-        return IpcChannel { id: N32(kira_ipc_accept(I32(id))) }
+        unsafe {
+            return IpcChannel { id: N32(kira_ipc_accept(I32(id))) }
+        }
     }
 
     /// Stops publishing the name and releases the endpoint.
     function close() {
         if id > 0 {
-            kira_ipc_close(I32(id))
+            unsafe { kira_ipc_close(I32(id)) }
         }
     }
 }
@@ -78,7 +80,9 @@ public struct IpcChannel {
         if id <= 0 {
             return false
         }
-        return Number(kira_ipc_alive(I32(id))) != 0
+        unsafe {
+            return Number(kira_ipc_alive(I32(id))) != 0
+        }
     }
 
     /// Sends one frame. Returns `false` when it did not go.
@@ -89,7 +93,9 @@ public struct IpcChannel {
             return false
         }
         let native = cBytes(bytes)
-        return Number(kira_ipc_send(I32(id), native, I32(native.count))) != 0
+        unsafe {
+            return Number(kira_ipc_send(I32(id), native, I32(native.count))) != 0
+        }
     }
 
     /// Encodes `envelope` and sends it as one frame.
@@ -108,7 +114,9 @@ public struct IpcChannel {
             return false
         }
         let native = cBytes(bytes)
-        return Number(kira_ipc_send_handle(I32(id), native, I32(native.count), handle)) != 0
+        unsafe {
+            return Number(kira_ipc_send_handle(I32(id), native, I32(native.count), handle)) != 0
+        }
     }
 
     /// Encodes `envelope` and sends it with an OS handle.
@@ -129,7 +137,8 @@ public struct IpcChannel {
         if id <= 0 {
             return IpcFrame { bytes: move frame, handle: 0 }
         }
-        let length = Number(kira_ipc_poll(I32(id)))
+        var length: Number = 0
+        unsafe { length = Number(kira_ipc_poll(I32(id))) }
         if length <= 0 {
             return IpcFrame { bytes: move frame, handle: 0 }
         }
@@ -137,7 +146,8 @@ public struct IpcChannel {
             // One call per eight bytes, little-endian. The last word of a frame
             // whose length is not a multiple of eight has zeros above the real
             // bytes. The loop stops at `length`, so it never reads them.
-            var word = UNumber(kira_ipc_frame_word(I32(id), I32(at)))
+            var word: UNumber = 0
+            unsafe { word = UNumber(kira_ipc_frame_word(I32(id), I32(at))) }
             var present = length - at * 8
             if present > 8 {
                 present = 8
@@ -147,15 +157,18 @@ public struct IpcChannel {
                 word = word >> 8
             }
         }
-        let handle = Number(kira_ipc_frame_handle(I32(id)))
-        kira_ipc_frame_release(I32(id))
+        var handle: Number = 0
+        unsafe {
+            handle = Number(kira_ipc_frame_handle(I32(id)))
+            kira_ipc_frame_release(I32(id))
+        }
         return IpcFrame { bytes: move frame, handle: handle }
     }
 
     /// Closes the connection.
     function close() {
         if id > 0 {
-            kira_ipc_close(I32(id))
+            unsafe { kira_ipc_close(I32(id)) }
         }
     }
 }
@@ -171,7 +184,9 @@ public struct IpcChannel {
 /// let endpoint = listen("example.ipc")
 /// ```
 public function listen(name: borrow String) -> IpcEndpoint {
-    return IpcEndpoint { id: N32(kira_ipc_listen(name)) }
+    unsafe {
+        return IpcEndpoint { id: N32(kira_ipc_listen(name)) }
+    }
 }
 
 /// Connects to a published `name`.
@@ -186,5 +201,7 @@ public function listen(name: borrow String) -> IpcEndpoint {
 /// let channel = connect("example.ipc")
 /// ```
 public function connect(name: borrow String) -> IpcChannel {
-    return IpcChannel { id: N32(kira_ipc_connect(name)) }
+    unsafe {
+        return IpcChannel { id: N32(kira_ipc_connect(name)) }
+    }
 }

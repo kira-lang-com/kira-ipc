@@ -130,7 +130,9 @@ public struct IpcReader {
 
     /// Reads a Float from its eight bytes, the exact inverse of `IpcWriter.putFloat`.
     function takeFloat(borrow mut self) -> Float {
-        return kira_ipc_f64_from_bits(U64(takeFixed()))
+        unsafe {
+            return kira_ipc_f64_from_bits(U64(takeFixed()))
+        }
     }
 
     /// Reads a byte count and checks it against the bytes that remain.
@@ -169,7 +171,9 @@ public struct IpcReader {
             return ""
         }
         let native = cBytes(raw)
-        return kira_ipc_text_from_bytes(native, I32(native.count))
+        unsafe {
+            return kira_ipc_text_from_bytes(native, I32(native.count))
+        }
     }
 
     /// Starts a nested region: reads its byte count and lowers the limit to its end.
